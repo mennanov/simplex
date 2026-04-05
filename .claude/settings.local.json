@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:eprint.iacr.org)",
+      "Bash(cargo build:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo info:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo clippy:*)"
+    ]
+  }
+}
