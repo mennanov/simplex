@@ -17,18 +17,25 @@ for arg in "$@"; do
   esac
 done
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-latest_release() {
-  # Fetch the tag of the most recent GitHub release for a given repo (owner/name).
-  # Uses /releases (not /releases/latest) because Charon and Aeneas publish
-  # pre-releases only, and /releases/latest returns 404 for pre-release-only repos.
-  local repo="$1"
-  curl -fsSL "https://api.github.com/repos/${repo}/releases" \
-    | grep '"tag_name"' \
-    | head -1 \
-    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-}
+# ── Pinned tool versions ───────────────────────────────────────────────────────
+# Charon and Aeneas publish only nightly pre-releases; there are no stable tags.
+# We pin specific release tags so that `make lean` and `lake build` are
+# reproducible and do not break silently when a new nightly drops.
+#
+# IMPORTANT: these two tags must be kept in sync with the Aeneas library revision
+# pinned in proof/lakefile.toml (`[[require]] rev = "..."`).  The commit hash
+# embedded in AENEAS_TAG must match that rev exactly, because the binary and the
+# Lean library it ships with must come from the same build.
+#
+# To upgrade:
+#   1. Update CHARON_TAG and AENEAS_TAG to the new release tags.
+#   2. Update the `rev` in proof/lakefile.toml to the commit hash in AENEAS_TAG.
+#   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
+#   4. If `lake build` fails, revisit the patch section (Step 4) below.
+CHARON_TAG="build-2026.04.03.155040-77d520657e76f265f21a0516c2e4d8d49ba27056"
+AENEAS_TAG="build-2026.04.05.213617-3cd6970451d7bebee6e34fec3bace4e08690a83a"
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
 detect_platform() {
   local os arch
   os="$(uname -s)"
@@ -46,22 +53,15 @@ detect_platform() {
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 install_tool() {
-  # Downloads a GitHub release binary tarball and installs to ~/.local/bin/<name>.
-  # Arguments: <binary-name> <github-repo-owner/name>
-  local name="$1" repo="$2"
-  local platform tag url tmpdir binary
+  # Downloads a pinned GitHub release binary tarball and installs to ~/.local/bin/<name>.
+  # Arguments: <binary-name> <github-repo-owner/name> <release-tag>
+  local name="$1" repo="$2" tag="$3"
+  local platform url tmpdir binary
 
   if ! platform="$(detect_platform)"; then
     return 1
   fi
-  echo "==> Fetching latest release of ${name} from ${repo}..."
-  tag="$(latest_release "$repo")"
-  if [ -z "$tag" ]; then
-    echo "Error: could not determine latest release tag for ${repo}" >&2
-    echo "       Check your internet connection or visit https://github.com/${repo}/releases" >&2
-    return 1
-  fi
-  echo "    Tag: ${tag}"
+  echo "==> Installing ${name} from ${repo} @ ${tag}..."
 
   url="https://github.com/${repo}/releases/download/${tag}/${name}-${platform}.tar.gz"
   echo "    URL: ${url}"
@@ -90,8 +90,8 @@ install_tool() {
 }
 
 if [ "$BOOTSTRAP" = true ]; then
-  install_tool charon AeneasVerif/charon
-  install_tool aeneas AeneasVerif/aeneas
+  install_tool charon AeneasVerif/charon "$CHARON_TAG"
+  install_tool aeneas AeneasVerif/aeneas "$AENEAS_TAG"
   echo "==> Bootstrap complete. Make sure ~/.local/bin is on your PATH."
 fi
 
@@ -146,4 +146,82 @@ fi
 # ── Step 3: Place output in Lean project ───────────────────────────────────────
 mkdir -p "$LEAN_DEST"
 cp "$AENEAS_LEAN" "$TARGET_LEAN"
+
+# ── Step 4: Patch known Aeneas binary/library mismatches ───────────────────────
+# As of the pinned nightly above, the Aeneas binary and the Lean library it
+# ships with are inconsistent in two ways.  Both are upstream bugs; we work
+# around them here so the generated file compiles without modifying the
+# generator itself.
+#
+# Bug 1 — wrong instance name for scalar PartialOrd (binary vs library naming):
+#   The binary emits `core.cmp.impls.PartialCmpU64.partial_cmp` when calling
+#   u64's PartialOrd implementation inside a derived PartialOrd for a newtype.
+#   The Lean library (Aeneas/Std/Scalar/EqOrd.lean) defines this function as
+#   `core.cmp.impls.PartialOrdU64.partial_cmp` via the `scalar` macro.
+#   Fix: replace every occurrence of the wrong name with the correct one.
+#
+# Bug 2 — incomplete PartialOrd struct literals (missing lt/le/gt/ge):
+#   The Lean library's `core.cmp.PartialOrd` structure requires six fields:
+#   partialEqInst, partial_cmp, lt, le, gt, ge.  The binary only emits the
+#   first two for derived PartialOrd impls on newtypes.  The library provides
+#   default implementations for the missing four in terms of partial_cmp.
+#   Fix: for any struct literal whose last field is `partial_cmp`, append the
+#   four missing fields using their library-provided default expressions.
+#
+# Bug 3 — incomplete Ord struct literals (missing max/min/clamp):
+#   Similarly, `core.cmp.Ord` requires eqInst, partialOrdInst, cmp, max, min,
+#   clamp, but the binary only emits the first three.  The library provides
+#   default implementations for max/min/clamp in terms of the partialOrdInst's
+#   lt/le/gt fields.
+#   Fix: for any struct literal whose last two fields are `partialOrdInst` then
+#   `cmp`, append max/min/clamp via the library defaults.
+python3 - "$TARGET_LEAN" <<'PYEOF'
+import re, sys
+
+content = open(sys.argv[1]).read()
+
+# Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
+content = content.replace(
+    'core.cmp.impls.PartialCmpU64.partial_cmp',
+    'core.cmp.impls.PartialOrdU64.partial_cmp',
+)
+
+# Bug 2: add missing lt/le/gt/ge to PartialOrd struct literals.
+# Pattern: a struct literal whose last field is `partial_cmp := EXPR` followed
+# immediately by the closing `}` on its own line.
+content = re.sub(
+    r'^  partial_cmp := ([^\n]+)$\n^}$',
+    lambda m: (
+        f'  partial_cmp := {m.group(1)}\n'
+        f'  lt := fun x y => core.cmp.PartialOrd.lt.default {m.group(1)} x y\n'
+        f'  le := fun x y => core.cmp.PartialOrd.le.default {m.group(1)} x y\n'
+        f'  gt := fun x y => core.cmp.PartialOrd.gt.default {m.group(1)} x y\n'
+        f'  ge := fun x y => core.cmp.PartialOrd.ge.default {m.group(1)} x y\n'
+        '}'
+    ),
+    content,
+    flags=re.MULTILINE,
+)
+
+# Bug 3: add missing max/min/clamp to Ord struct literals.
+# Pattern: a struct literal whose last two fields are `partialOrdInst := POI`
+# then `cmp := EXPR` followed immediately by the closing `}` on its own line.
+# max/min/clamp are derived from the partialOrdInst's lt/le/gt projections.
+content = re.sub(
+    r'^  partialOrdInst := ([^\n]+)$\n^  cmp := ([^\n]+)$\n^}$',
+    lambda m: (
+        f'  partialOrdInst := {m.group(1)}\n'
+        f'  cmp := {m.group(2)}\n'
+        f'  max := core.cmp.Ord.max.default {m.group(1)}.lt\n'
+        f'  min := core.cmp.Ord.min.default {m.group(1)}.lt\n'
+        f'  clamp := core.cmp.Ord.clamp.default {m.group(1)}.le {m.group(1)}.lt {m.group(1)}.gt\n'
+        '}'
+    ),
+    content,
+    flags=re.MULTILINE,
+)
+
+open(sys.argv[1], 'w').write(content)
+PYEOF
+
 echo "==> Done. Generated: $TARGET_LEAN"
