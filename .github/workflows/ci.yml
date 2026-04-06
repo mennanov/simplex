@@ -40,3 +40,43 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Run tests
         run: cargo test --all-features --workspace
+
+  lean-proof:
+    name: Lean Proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install Charon and Aeneas
+        run: |
+          ./scripts/gen_lean.sh --bootstrap
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Generate Lean from Rust
+        run: make lean
+
+      - name: Cache Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-${{ hashFiles('proof/lean-toolchain') }}
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lake packages
+        uses: actions/cache@v4
+        with:
+          path: proof/.lake/packages
+          key: lake-${{ hashFiles('proof/lake-manifest.json') }}
+
+      - name: Get mathlib cache
+        run: cd proof && lake exe cache get
+
+      - name: Build Lean proof
+        run: cd proof && lake build
