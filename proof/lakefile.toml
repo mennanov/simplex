@@ -2,14 +2,14 @@ name = "proof"
 version = "0.1.0"
 defaultTargets = ["proof"]
 
-# Aeneas Lean support library.  The commit hash here must match the commit
-# embedded in AENEAS_TAG in scripts/gen_lean.sh — they must come from the
-# same nightly build so that the generated Consensus.lean and the library
-# it imports are in sync.  Update both together when upgrading.
+# Aeneas Lean support library.  The rev below must equal the commit hash
+# embedded in AENEAS_TAG in scripts/gen_lean.sh — blockwatch enforces this.
 [[require]]
 name = "Aeneas"
 git = "https://github.com/AeneasVerif/aeneas"
+# <block name="aeneas-rev" affects="scripts/gen_lean.sh:aeneas-tag">
 rev = "3cd6970451d7bebee6e34fec3bace4e08690a83a"  # AENEAS_TAG: build-2026.04.05.213617
+# </block>
 subDir = "backends/lean"
 
 [[lean_lib]]

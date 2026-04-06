@@ -32,8 +32,17 @@ done
 #   2. Update the `rev` in proof/lakefile.toml to the commit hash in AENEAS_TAG.
 #   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
 #   4. If `lake build` fails, revisit the patch section (Step 4) below.
+# <block name="charon-tag">
 CHARON_TAG="build-2026.04.03.155040-77d520657e76f265f21a0516c2e4d8d49ba27056"
+# </block>
+
+# The commit hash embedded in AENEAS_TAG must match the `rev` in
+# proof/lakefile.toml — blockwatch enforces that both are updated together.
+# Also update proof/lean-toolchain to match the Lean version the new
+# Aeneas library requires (check backends/lean/lean-toolchain in the tarball).
+# <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev">
 AENEAS_TAG="build-2026.04.05.213617-3cd6970451d7bebee6e34fec3bace4e08690a83a"
+# </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 detect_platform() {
