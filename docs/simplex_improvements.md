@@ -7,9 +7,9 @@
 ## 1. Motivation
 
 The Simplex protocol as specified in CP23 transmits the *entire* notarized blockchain in three protocol actions: leader
-proposals, vote validation, and iteration-advance forwarding. A literal implementation would send O(h) blocks and O(h)
-notarizations per slot, where h is the current blockchain height. This is clearly impractical — after 10,000 committed
-slots with 1KB blocks and 100-node notarizations (~5KB each), each proposal message would exceed 60MB.
+proposals, vote validation, and view-advance forwarding. A literal implementation would send O(h) blocks and O(h)
+notarizations per view, where h is the current blockchain height. This is clearly impractical — after 10,000 finalized
+views with 1KB blocks and 100-node notarizations (~5KB each), each proposal message would exceed 60MB.
 
 This section specifies the minimal set of changes to the CP23 protocol that eliminate full-chain transmission while
 preserving the original safety and liveness proofs with only trivial adjustments. The changes are:
@@ -17,13 +17,13 @@ preserving the original safety and liveness proofs with only trivial adjustments
 1. Replace hash-chain block linking with height-based parent references.
 2. Reduce the leader proposal message to contain only the new block.
 3. Shift proposal validation from inspecting the proposal payload to checking local state.
-4. Reduce iteration-advance forwarding to transmit only the triggering notarization.
+4. Reduce view-advance forwarding to transmit only the triggering notarization.
 
 Change 4 eliminates CP23's implicit catch-up mechanism (where every forwarding message carried the full chain). To
 compensate, Section 8 specifies a dedicated catch-up protocol for nodes that fall behind during periods of asynchrony.
 
-An optional fifth change (eager complaint on invalid payloads) is included as a performance improvement that does not
-affect the proof structure.
+An optional fifth change (eager dummy-block vote on invalid payloads) is included as a performance improvement that does
+not affect the proof structure.
 
 All changes assume small block payloads (under ~100KB), so no erasure coding or information dispersal is introduced. The
 protocol logic, state transitions, safety proof, and liveness proof remain structurally identical to CP23. The only
@@ -40,7 +40,7 @@ The following table maps each CP23 protocol action to its modification status.
 | Step 3: Vote on proposal        | `⟨vote, h, bₕ⟩_i`                                                 | **No**   | —                                               |
 | Step 3: Validation logic        | Check `(b₀, …, bₕ₋₁, S)` from the proposal                        | **Yes**  | Check local state                               |
 | Step 4: Finalize message        | `⟨finalize, h⟩_i`                                                 | **No**   | —                                               |
-| Step 4: Forward notarized chain | Full notarized blockchain of height h                             | **Yes**  | Notarization for height h only                  |
+| Step 4: Forward notarized chain | Full notarized blockchain of height h                             | **Yes**  | Notarization for view h only                    |
 | Step 5: Finalization output     | On 2n/3 finalize msgs for h                                       | **No**   | —                                               |
 | Block structure                 | `(h, H(b₀, …, bₕ₋₁), txs)`                                        | **Yes**  | `(h, h_parent, txs)`                            |
 | Catch-up for lagging nodes      | Not specified (full-chain forwarding serves as implicit catch-up) | **New**  | Dedicated request/response protocol (Section 8) |
@@ -51,7 +51,7 @@ The following table maps each CP23 protocol action to its modification status.
 
 A block is a tuple `(h, parent_hash, txs)` where:
 
-- `h` is the block height.
+- `h` is the height of the block.
 - `parent_hash = H(b₀, …, bₕ₋₁)` is a collision-resistant hash over the entire parent blockchain.
 - `txs` is a sequence of transactions.
 
@@ -61,14 +61,14 @@ The genesis block is `b₀ = (0, ∅, ∅)`.
 
 A block is a tuple `(h, h_parent, txs)` where:
 
-- `h` is the block height (equivalently, the slot number).
+- `h` is the height of the block.
 - `h_parent` is the height of the highest non-dummy ancestor block in the parent chain. `h_parent = 0` indicates the
   genesis block is the direct parent.
 - `txs` is a sequence of transactions.
 
 The genesis block is `b₀ = (0, 0, ∅)`.
 
-The dummy block for height h is `⊥_h = (h, ⊥, ⊥)`, unchanged from CP23. Dummy blocks do not reference a parent height
+The dummy block of height h is `⊥_h = (h, ⊥, ⊥)`, unchanged from CP23. Dummy blocks do not reference a parent height
 because, as in CP23, voters may disagree on the parent chain of a dummy block, and fixing a parent would split votes.
 
 ### 3.3. Correctness argument
@@ -81,9 +81,9 @@ Under the modified block structure, this final step is replaced by the following
 parties both hold a notarized non-dummy block at height h, and both blocks have `h_parent = p`. By the quorum
 intersection lemma (CP23 Lemma 3.2), there is at most one notarized non-dummy block at any given height. Therefore the
 block at height p is uniquely determined. Dummy blocks do not break this induction: the dummy block `⊥_k = (k, ⊥, ⊥)` is
-structurally identical for all parties at a given height k, so intermediate dummy slots between p and h contribute no
-ambiguity. Applying the same argument to the block at height p and its own `h_parent` field, and continuing inductively
-down to the genesis block, we recover the property that the full ancestor chain is identical.
+structurally identical for all parties at a given height k, so intermediate heights between p and h with dummy blocks
+contribute no ambiguity. Applying the same argument to the block at height p and its own `h_parent` field, and
+continuing inductively down to the genesis block, we recover the property that the full ancestor chain is identical.
 
 Shoup confirms this independently: "while the Simplex protocol as specified in [CP23] relies on hash-based chaining of
 blocks, this turns out to be unnecessary" (DispersedSimplex, Section 1).
@@ -96,7 +96,7 @@ blocks, this turns out to be unnecessary" (DispersedSimplex, Section 1).
 
 ### 4.1. CP23 specification
 
-When the leader `L_h` enters iteration h, it multicasts:
+When the leader `L_h` enters view h, it multicasts:
 
 ```
 ⟨propose, h, b₀, b₁, …, bₕ, S⟩_L
@@ -107,7 +107,7 @@ block.
 
 ### 4.2. Modified specification
 
-When the leader `L_h` enters iteration h, it multicasts:
+When the leader `L_h` enters view h, it multicasts:
 
 ```
 ⟨propose, h, bₕ⟩_L
@@ -119,19 +119,19 @@ No parent chain, no notarizations — just the block itself.
 
 ### 4.3. Why this is sufficient
 
-When the leader enters iteration h, it has seen a notarized blockchain of height `h - 1`. By CP23 Lemma 3.4 ("
-Synchronized Iterations"), every honest party enters iteration h within δ time of the first honest party entering h. To
-enter iteration h, a party must have seen a notarized blockchain of height `h - 1`. Therefore, by the time any honest
-voter receives the leader's proposal, it already possesses — in its local state — all notarized blocks (real and dummy)
-for heights 1 through `h - 1`.
+When the leader enters view h, it has seen a notarized blockchain of height `h - 1`. By CP23 Lemma 3.4 ("Synchronized
+Iterations"), every honest party enters view h within δ time of the first honest party entering h. To enter view h, a
+party must have seen a notarized blockchain of height `h - 1`. Therefore, by the time any honest voter receives the
+leader's proposal, it already possesses — in its local state — all notarized blocks (real and dummy) for heights 1
+through `h - 1`.
 
 The proposal therefore does not need to carry redundant data that the voter already has.
 
 ### 4.4. Message size
 
-The proposal message contains: 1 slot number (8 bytes) + 1 block (8 + 8 + |txs| bytes) + 1 signature (~48 bytes for
-BLS, ~64 bytes for Ed25519). For a 10KB transaction payload, this is approximately 10.1KB — compared to the O(h × (
-|block| + |notarization|)) of the original.
+The proposal message contains: 1 height (8 bytes) + 1 block (8 + 8 + |txs| bytes) + 1 signature (~48 bytes for BLS, ~64
+bytes for Ed25519). For a 10KB transaction payload, this is approximately 10.1KB — compared to the O(h × (|block| +
+|notarization|)) of the original.
 
 ## 5. Change 3: Proposal Validation Against Local State
 
@@ -152,30 +152,30 @@ On receiving `⟨propose, h, bₕ⟩_L` from the leader, where `bₕ = (h, h_par
 1. **Well-formedness:** `bₕ ≠ ⊥_h`, and `0 ≤ h_parent < h`.
 2. **Parent exists:** The voter's local state contains a notarized non-dummy block at height `h_parent`, or
    `h_parent = 0` (genesis).
-3. **Intermediate slots covered:** For every height `k` in the range `h_parent + 1, …, h - 1`, the voter's local state
+3. **Intermediate heights covered:** For every height `k` in the range `h_parent + 1, …, h - 1`, the voter's local state
    contains a notarized block at height `k` (this will necessarily be a notarized dummy block `⊥_k`).
 4. **Payload validity:** `txs` satisfies application-level validity conditions (e.g., no duplicate transactions, valid
-   against the committed state through `h_parent`).
+   against the finalized state through `h_parent`).
 
 If all checks pass, the voter multicasts `⟨vote, h, bₕ⟩_i`.
 
 ### 5.3. Deferred validation
 
-Conditions (2) and (3) may not hold at the instant the proposal message arrives. For example, the notarization for
-height `h - 1` may still be in transit. This is handled by deferring: the voter stores the proposal and re-evaluates
+Conditions (2) and (3) may not hold at the instant the proposal message arrives. For example, the notarization for view
+`h - 1` may still be in transit. This is handled by deferring: the voter stores the proposal and re-evaluates
 conditions (2) and (3) whenever a new notarization is added to its local state. This is functionally identical to what
 happens in CP23 when a voter receives a proposal containing parent-chain data it cannot yet verify — the voter must wait
 regardless.
 
-> **Implementation note.** Maintain a pending-proposals buffer keyed by slot number. On receiving any new notarization,
+> **Implementation note.** Maintain a pending-proposals buffer keyed by view number. On receiving any new notarization,
 > re-check all pending proposals whose conditions were previously unsatisfied. The buffer should hold at most one
 > proposal
-> per slot (the first valid-looking one from the leader). Proposals for slots the voter has already left are discarded.
+> per view (the first valid-looking one from the leader). Proposals for views the voter has already left are discarded.
 >
-> "Valid-looking" means the proposal passes structural checks before buffering: correct slot number, valid leader
+> "Valid-looking" means the proposal passes structural checks before buffering: correct view number, valid leader
 > signature, `h_parent` in the expected range, and payload size below a configured maximum `MAX_BLOCK_SIZE`. Proposals
 > exceeding `MAX_BLOCK_SIZE` are dropped without buffering to prevent memory exhaustion from a Byzantine leader. A
-> Byzantine leader that sends an equivocating second proposal (a different block for the same slot) is detected by
+> Byzantine leader that sends an equivocating second proposal (a different block for the same view) is detected by
 > comparing against the buffered proposal; the second proposal is discarded. Equivocation detection is not required for
 > safety — the voter votes for at most one proposal — but is useful for diagnostics and peer reputation tracking.
 
@@ -192,89 +192,89 @@ Specifically:
   height. This is preserved: the voter still votes for at most the first valid proposal from the leader.
 - **Lemma 3.3 (quorum intersection on finalize vs. dummy):** Depends only on honest voters sending either `finalize` or
   a dummy vote, never both. This is preserved: the finalize/dummy logic is unchanged.
-- **Lemma 3.4 (synchronized iterations):** Depends only on forwarding notarized blockchains when entering a new
-  iteration. This is addressed by Change 4.
+- **Lemma 3.4 (synchronized iterations):** Depends only on forwarding notarized blockchains when entering a new view.
+  This is addressed by Change 4.
 - **Lemma 3.5 (honest leader liveness):** Depends on all honest voters receiving and validating the leader's proposal
-  within δ. Since all honest voters already have the parent chain data locally (having entered iteration h), they can
+  within δ. Since all honest voters already have the parent chain data locally (having entered view h), they can
   validate the compact proposal immediately.
 
 ## 6. Change 4: Iteration-Advance Forwarding
 
 ### 6.1. CP23 specification
 
-When a party sees a notarized blockchain of height h and enters iteration `h + 1`, it "multicasts its current view of
-the notarized blockchain to everyone else."
+When a party sees a notarized blockchain of height h and enters view `h + 1`, it "multicasts its current view of the
+notarized blockchain to everyone else."
 
 ### 6.2. Modified specification
 
-When a party sees a notarized blockchain of height h and enters iteration `h + 1`, it multicasts:
+When a party sees a notarized blockchain of height h and enters view `h + 1`, it multicasts:
 
 ```
 ⟨notarization, h, bₕ, V⟩
 ```
 
-where `bₕ` is the notarized block at height h, and `V` is the set of 2n/3 vote signatures constituting the notarization.
+where `bₕ` is the notarized block of height h, and `V` is the set of 2n/3 vote signatures constituting the notarization.
 
 For dummy blocks: `bₕ = ⊥_h` and the notarization consists of 2n/3 signatures on `⟨vote, h, ⊥_h⟩`.
 
 ### 6.3. Why the full chain is unnecessary
 
-The purpose of this forwarding step is to ensure that every honest party can also enter iteration `h + 1` within δ
-time (this is the mechanism underlying CP23 Lemma 3.4). To enter iteration `h + 1`, a party needs a notarized blockchain
-of height h. Since honest parties are synchronized to within one iteration of each other (Lemma 3.4), a receiving party
-is at iteration h or h − 1. In either case:
+The purpose of this forwarding step is to ensure that every honest party can also enter view `h + 1` within δ time (this
+is the mechanism underlying CP23 Lemma 3.4). To enter view `h + 1`, a party needs a notarized blockchain of height h.
+Since honest parties are synchronized to within one view of each other (Lemma 3.4), a receiving party is at view h or
+h − 1. In either case:
 
-- If at iteration h: the party already has notarized blocks for all heights through h − 1, and needs only the
-  notarization for height h.
-- If at iteration h − 1: the party is waiting for a notarized blockchain of height h − 1 to arrive. It will receive this
-  through normal protocol operation (someone else forwarding the notarization for h − 1). Once it enters iteration h, it
-  then only needs the notarization for height h.
+- If at view h: the party already has notarized blocks for all heights through h − 1, and needs only the notarization
+  for view h.
+- If at view h − 1: the party is waiting for a notarized blockchain of height h − 1 to arrive. It will receive this
+  through normal protocol operation (someone else forwarding the notarization for h − 1). Once it enters view h, it then
+  only needs the notarization for view h.
 
-In both cases, the height-h notarization is the only piece of data the receiver is missing. No earlier chain data needs
-to be retransmitted.
+In both cases, the view-h notarization is the only piece of data the receiver is missing. No earlier chain data needs to
+be retransmitted.
 
 ### 6.4. Message size
 
-The forwarded notarization contains: 1 slot number (8 bytes) + 1 block (8 + 8 + |txs| bytes or a fixed-size dummy
-block) + 2n/3 vote signatures. For n = 100 with 48-byte BLS signatures, this is approximately 3.2KB + |txs| — compared
-to O(h × 5KB) for the full chain.
+The forwarded notarization contains: 1 height (8 bytes) + 1 block (8 + 8 + |txs| bytes or a fixed-size dummy block) +
+2n/3 vote signatures. For n = 100 with 48-byte BLS signatures, this is approximately 3.2KB + |txs| — compared to O(h ×
+5KB) for the full chain.
 
 ### 6.5. Correctness argument
 
-Lemma 3.4 states: "If some honest process has entered iteration h by time t, then every honest process has entered
-iteration h by time max(GST, t + δ)." The proof relies solely on the forwarding party sending enough data for the
-receiver to construct a notarized blockchain of height h − 1 (thereby entering iteration h). Under our modified
-forwarding:
+Lemma 3.4 states: "If some honest process has entered view h by time t, then every honest process has entered view h by
+time max(GST, t + δ)." The proof relies solely on the forwarding party sending enough data for the receiver to construct
+a notarized blockchain of height h − 1 (thereby entering view h). Under our modified forwarding:
 
-1. The receiver gets the height-h notarization from the forwarding party.
+1. The receiver gets the view-h notarization from the forwarding party.
 2. The receiver already holds all notarized blocks for heights 1 through h − 1 (or will receive them within δ from other
    forwarding messages).
-3. Therefore, the receiver can construct a full notarized blockchain of height h and enter iteration h + 1.
+3. Therefore, the receiver can construct a full notarized blockchain of height h and enter view h + 1.
 
 The timing bound of max(GST, t + δ) is preserved because the forwarded message arrives within δ, and the receiver's
 local state already contains the prerequisite data.
 
 > **Implementation note: out-of-order delivery and catch-up.** The liveness argument above assumes δ-synchronous
-> delivery, under which all forwarded notarizations arrive in order and honest parties stay within one iteration of each
-> other. In a real deployment, two situations break this assumption:
+> delivery, under which all forwarded notarizations arrive in order and honest parties stay within one view of each
+> other.
+> In a real deployment, two situations break this assumption:
 >
 > 1. *Out-of-order delivery within synchrony:* Over TCP, messages are reliably delivered but notarizations may arrive
-     out of order (e.g., the notarization for height h arrives before the one for h−1). The implementation should buffer
-     notarizations for future iterations and process them when the party advances to the relevant iteration.
+     out of order (e.g., the notarization for view h arrives before the one for h−1). The implementation should buffer
+     notarizations for future views and process them when the party advances to the relevant view.
 > 2. *Lagging nodes after asynchrony:* A node that experiences a network partition or temporary disconnection will miss
-     multiple iterations. When connectivity resumes, it receives notarizations for the current height but lacks
-     intermediate notarizations and cannot advance. Unlike CP23's full-chain forwarding (which delivers the entire chain
-     in every forwarding message), our compact forwarding does not allow a lagging node to catch up from normal protocol
-     traffic alone.
+     multiple views. When connectivity resumes, it receives notarizations for the current view but lacks intermediate
+     notarizations and cannot advance. Unlike CP23's full-chain forwarding (which delivers the entire chain in every
+     forwarding message), our compact forwarding does not allow a lagging node to catch up from normal protocol traffic
+     alone.
 >
 > Situation (2) requires a dedicated catch-up protocol. See Section 8 for the specification.
 
-## 7. Optional Change 5: Eager Complaint on Invalid Payload
+## 7. Optional Change 5: Eager Dummy-Block Vote on Invalid Payload
 
 ### 7.1. Motivation
 
 In the unmodified protocol, when a voter receives a proposal with an invalid or malformed payload from a corrupt leader,
-it takes no special action. The slot eventually times out after 3Δ, at which point the voter sends a dummy vote. With Δ
+it takes no special action. The view eventually times out after 3Δ, at which point the voter sends a dummy vote. With Δ
 set conservatively (e.g., 10 seconds), this means a corrupt leader sending garbage costs 30+ seconds of wasted time.
 
 ### 7.2. Modified behavior
@@ -288,13 +288,13 @@ transactions, application-level validation failure), the voter immediately multi
 
 This replaces the normal path where the voter would wait for the timer to fire before voting for the dummy block.
 
-The voter also cancels any further proposal processing for this slot — it will not vote for a subsequently received (
+The voter also cancels any further proposal processing for this view — it will not vote for a subsequently received (
 potentially corrected) proposal from the same leader, since it has already voted for the dummy block.
 
 ### 7.3. Correctness argument
 
 **Safety.** Voting for the dummy block is always a safe action in CP23. An honest voter is permitted to vote for the
-dummy block at any time during an iteration (the timer is a liveness mechanism, not a safety mechanism). The quorum
+dummy block at any time during a view (the timer is a liveness mechanism, not a safety mechanism). The quorum
 intersection arguments (Lemmas 3.2 and 3.3) are not affected, because they depend only on the constraint that an honest
 voter sends at most one vote for a non-dummy block and at most one of {dummy-vote, finalize} — both constraints remain
 satisfied.
@@ -308,20 +308,20 @@ where the corrupt leader sends an identifiably bad proposal to all honest partie
 ### 8.1. Problem statement
 
 Our compact forwarding (Change 4) creates a new requirement that does not exist in CP23 as literally specified: a node
-that falls behind by more than one iteration cannot catch up from normal consensus messages alone.
+that falls behind by more than one view cannot catch up from normal consensus messages alone.
 
 This situation arises in three cases:
 
 1. **Temporary network partition.** A node loses connectivity for some interval, during which the network advances
-   through multiple iterations. When connectivity resumes, the node is multiple iterations behind.
+   through multiple views. When connectivity resumes, the node is multiple views behind.
 2. **Slow node.** A node is too slow to process blocks at the rate the network produces them (e.g., due to CPU or disk
    bottleneck). It gradually falls behind.
 3. **Crash and restart.** A node crashes and restarts, losing all in-memory state. (If state was persisted to disk, it
-   restarts from its last persisted iteration.)
+   restarts from its last persisted view.)
 
-In all three cases, the lagging node P is at some iteration `h_old` while the network is at `h_current >> h_old`. P
-receives consensus messages for `h_current` but cannot process them because it lacks notarized blocks for iterations
-`h_old + 1` through `h_current - 1`.
+In all three cases, the lagging node P is at some view `h_old` while the network is at `h_current >> h_old`. P receives
+consensus messages for `h_current` but cannot process them because it lacks notarized blocks for views `h_old + 1`
+through `h_current - 1`.
 
 Note that CP23's full-chain forwarding handles cases (1) and (2) automatically — the forwarding message contains the
 entire chain, so any received message immediately brings P up to date. It does not handle case (3), because a crashed
@@ -332,18 +332,17 @@ cases from consensus messages alone, so all three require the catch-up protocol 
 
 To resume participation, node P needs two things:
 
-1. **Committed state through `committed_height`.** This is either the sequence of all committed block payloads (from
-   which P can reconstruct the application state), or an application-level state snapshot (checkpoint) at
-   `committed_height`.
+1. **Committed state through `finalized_view`.** This is either the sequence of all finalized block payloads (from which
+   P can reconstruct the application state), or an application-level state snapshot (checkpoint) at `finalized_view`.
 
-2. **The consensus tail: notarized blocks from `committed_height + 1` through `current_slot`.** This is the set of
-   notarized blocks (real and dummy) that have not yet been committed. This tail is bounded in size — during synchrony
+2. **The consensus tail: notarized blocks from `finalized_view + 1` through `current_view`.** This is the set of
+   notarized blocks (real and dummy) that have not yet been finalized. This tail is bounded in size — during synchrony
    with honest leaders, it is at most 1–2 blocks deep; during periods of consecutive corrupt leaders, it grows at most
-   linearly with the number of corrupt-leader slots.
+   linearly with the number of corrupt-leader views.
 
 In practice, a checkpoint-based approach is strongly preferred: P requests a state snapshot at the latest
-`committed_height` rather than replaying all blocks from genesis. The consensus tail is then just the small set of
-post-commit notarized blocks.
+`finalized_view` rather than replaying all blocks from genesis. The consensus tail is then just the small set of
+post-finalization notarized blocks.
 
 ### 8.3. Protocol
 
@@ -351,20 +350,20 @@ The catch-up protocol uses two new message types, exchanged point-to-point (not 
 
 ```
 CatchUpRequest {
-    my_height: Slot,           // P's current iteration
-    my_committed: Slot,        // P's last committed height
+        my_view: View,             // P's current view
+    my_finalized: View,        // P's last finalized view
 }
 
 CatchUpResponse {
-    committed_height: Slot,    // Responder's last committed height
-    committed_block: Block,    // The committed block at committed_height
-    finalization: Vec<(PeerId, Sig)>,  // Finalization certificate for committed_height
-    tail: Vec<(Block, Vec<(PeerId, Sig)>)>,  // Notarized blocks from committed_height+1 to current
+    finalized_view: View,    // Responder's last finalized view
+    finalized_block: Block,    // The finalized block at finalized_view
+    finalization: Vec<(PeerId, Sig)>,  // Finalization certificate for finalized_view
+    tail: Vec<(Block, Vec<(PeerId, Sig)>)>,  // Notarized blocks from finalized_view+1 to current
 }
 ```
 
-**Trigger.** When node P receives a consensus message (proposal, vote, notarization, or finalize) for a slot `h` such
-that `h > current_slot + CATCH_UP_THRESHOLD`, P concludes it is lagging and initiates catch-up. `CATCH_UP_THRESHOLD` is
+**Trigger.** When node P receives a consensus message (proposal, vote, notarization, or finalize) for a view `h` such
+that `h > current_view + CATCH_UP_THRESHOLD`, P concludes it is lagging and initiates catch-up. `CATCH_UP_THRESHOLD` is
 a configuration parameter; a value of 2–5 is reasonable.
 
 P should not initiate catch-up on every out-of-range message. A simple rate limit (at most one catch-up request per
@@ -376,54 +375,54 @@ send catch-up requests to multiple peers in parallel and take the first valid re
 **Response.** On receiving a `CatchUpRequest`, an honest peer Q constructs a `CatchUpResponse` from its own local state.
 Q includes:
 
-- Its latest committed block and the corresponding finalization certificate (2n/3 finalize signatures).
-- All notarized blocks after `committed_height` that Q has in its complete block tree.
+- Its latest finalized block and the corresponding finalization certificate (2n/3 finalize signatures).
+- All notarized blocks after `finalized_view` that Q has in its local block store.
 
 **Validation.** On receiving a `CatchUpResponse`, P validates:
 
-1. The finalization certificate is valid: 2n/3 valid signatures on `⟨finalize, committed_height⟩`.
-2. The committed block at `committed_height` is notarized in the response (or P already has it).
+1. The finalization certificate is valid: 2n/3 valid signatures on `⟨finalize, finalized_view⟩`.
+2. The finalized block at `finalized_view` is notarized in the response (or P already has it).
 3. Each block in the tail has a valid notarization (2n/3 vote signatures).
-4. The tail forms a valid chain: each block's `h_parent` references an earlier block in the tail or the committed block.
+4. The tail forms a valid chain: each block's `h_parent` references an earlier block in the tail or the finalized block.
 
 If validation passes, P updates its local state:
 
-- Sets `committed_height` to the response's `committed_height`.
+- Sets `finalized_view` to the response's `finalized_view`.
 - Adds all tail blocks to its local notarized-block store.
-- Advances `current_slot` to the height of the latest block in the tail + 1.
-- Delivers committed block payloads to the application layer.
+- Advances `current_view` to the height of the latest block in the tail + 1.
+- Delivers finalized block payloads to the application layer.
 - Resumes normal consensus participation.
 
 ### 8.4. Bounding the catch-up data
 
-The size of the `CatchUpResponse` is bounded by the consensus tail, which is the gap between the current slot and the
-last committed slot. This gap is bounded as follows:
+The size of the `CatchUpResponse` is bounded by the consensus tail, which is the gap between the current view and the
+last finalized view. This gap is bounded as follows:
 
-- **During synchrony with honest leaders:** Each honest leader's block is committed within 3δ (Lemma 3.5). The tail is
+- **During synchrony with honest leaders:** Each honest leader's block is finalized within 3δ (Lemma 3.5). The tail is
   at most 1–2 blocks.
-- **During synchrony with consecutive corrupt leaders:** Each corrupt leader slot is skipped within 3Δ + δ (Lemma 3.6).
-  Blocks are not committed during this period, so the tail grows by 1 per corrupt leader slot. With f < n/3 corrupt
-  parties and random leader selection, the expected run of consecutive corrupt leaders is ≤ 1.5 slots.
+- **During synchrony with consecutive corrupt leaders:** Each corrupt leader view is skipped within 3Δ + δ (Lemma 3.6).
+  Blocks are not finalized during this period, so the tail grows by 1 per corrupt leader view. With f < n/3 corrupt
+  parties and random leader selection, the expected run of consecutive corrupt leaders is ≤ 1.5 views.
 - **During asynchrony:** The tail can grow unboundedly in theory, but in practice timeout mechanisms ensure it remains
   manageable.
 
 For typical parameters (n = 100, Δ = 10s, honest majority of leaders), the tail is almost always under 10 blocks. Even
-in adversarial conditions, the tail is bounded by the number of slots elapsed during the asynchronous period.
+in adversarial conditions, the tail is bounded by the number of views elapsed during the asynchronous period.
 
 ### 8.5. Safety argument
 
 The catch-up protocol does not affect consensus safety. A catching-up node P does not cast any votes or send any
-consensus messages until it has completed catch-up and advanced to the current iteration. During catch-up, P is a
-passive observer.
+consensus messages until it has completed catch-up and advanced to the current view. During catch-up, P is a passive
+observer.
 
 The catch-up response is self-authenticating: the finalization certificate and notarizations contain the same 2n/3
 threshold signatures used by the consensus protocol itself. A Byzantine peer cannot fabricate a valid catch-up response
 containing blocks or finalization certificates that were not actually produced by the consensus protocol (this follows
 from the same Quorum Size Property used throughout CP23).
 
-A Byzantine peer *can* send a stale catch-up response (e.g., one that is several slots behind the true current state).
+A Byzantine peer *can* send a stale catch-up response (e.g., one that is several views behind the true current state).
 This is harmless: P will catch up to the stale state, resume consensus, and then immediately detect that it is still
-behind (because it will receive consensus messages for slots beyond its new `current_slot`), triggering another catch-up
+behind (because it will receive consensus messages for views beyond its new `current_view`), triggering another catch-up
 round.
 
 ### 8.6. Liveness argument
@@ -431,13 +430,13 @@ round.
 The catch-up protocol restores the liveness property that was lost by compact forwarding. Specifically:
 
 **Claim.** Suppose the network is δ-synchronous over [T, T + Δ_catchup] for some Δ_catchup, and at time T some honest
-node P is at iteration h_old while all other honest nodes are at iteration h_current. Then P will complete catch-up and
-resume consensus participation before time T + 3δ + Δ_catchup, where Δ_catchup accounts for the time to transmit the
-catch-up response.
+node P is at view h_old while all other honest nodes are at view h_current. Then P will complete catch-up and resume
+consensus participation before time T + 3δ + Δ_catchup, where Δ_catchup accounts for the time to transmit the catch-up
+response.
 
 **Argument.** At time T, P receives a consensus message for h_current from some honest peer Q, triggering a catch-up
 request (within T + δ). Q responds with a valid `CatchUpResponse` (within T + 2δ). P validates and applies the
-response (within T + 2δ + computation time). P then advances to the current iteration and resumes normal participation.
+response (within T + 2δ + computation time). P then advances to the current view and resumes normal participation.
 
 The total catch-up time is dominated by the transmission time for the catch-up response, which is proportional to the
 size of the consensus tail. For the typical case (tail of 1–10 blocks at 10KB each), this is under 1ms of transmission
@@ -445,44 +444,44 @@ time at 1Gbps, negligible compared to δ.
 
 ### 8.7. Interaction with consensus participation
 
-While catching up, node P must handle an edge case: it may receive consensus messages for the current iteration from
-other nodes *during* the catch-up process. The implementation should:
+While catching up, node P must handle an edge case: it may receive consensus messages for the current view from other
+nodes *during* the catch-up process. The implementation should:
 
-1. **Buffer all consensus messages** received during catch-up, keyed by slot number.
-2. **After catch-up completes**, process buffered messages for `current_slot` normally (they may contain proposals,
+1. **Buffer all consensus messages** received during catch-up, keyed by view number.
+2. **After catch-up completes**, process buffered messages for `current_view` normally (they may contain proposals,
    votes, or notarizations that allow P to immediately participate).
-3. **Discard buffered messages** for slots before `current_slot` — they are no longer relevant.
+3. **Discard buffered messages** for views before `current_view` — they are no longer relevant.
 
-This ensures P transitions smoothly from catch-up to active consensus without missing the current slot's activity.
+This ensures P transitions smoothly from catch-up to active consensus without missing the current view's activity.
 
 ### 8.8. Comparison to CP23 full-chain forwarding
 
 | Property                        | CP23 full-chain forwarding                | Compact forwarding + catch-up                     |
 |---------------------------------|-------------------------------------------|---------------------------------------------------|
-| Steady-state bandwidth per slot | O(h × n × (\|block\| + \|notarization\|)) | O(n × (\|block\| + \|notarization\|))             |
+| Steady-state bandwidth per view | O(h × n × (\|block\| + \|notarization\|)) | O(n × (\|block\| + \|notarization\|))             |
 | Catch-up latency                | 0 (built into every message)              | 1 round trip (catch-up request/response)          |
 | Catch-up bandwidth              | Amortized into steady-state cost          | O(tail_length × \|block\|), paid only when needed |
 | Crash recovery                  | Does not help (no local state)            | Same mechanism handles both partition and crash   |
 | Implementation complexity       | None (part of protocol)                   | Requires catch-up protocol + message buffering    |
 
 The compact forwarding + catch-up approach trades a constant 1-round-trip catch-up cost (paid only by lagging nodes,
-only when they are actually behind) for an O(h) reduction in steady-state per-slot bandwidth (paid by every node, every
-slot). For any chain longer than a few dozen blocks, this is a decisive win.
+only when they are actually behind) for an O(h) reduction in steady-state per-view bandwidth (paid by every node, every
+view). For any chain longer than a few dozen blocks, this is a decisive win.
 
 ## 9. Resulting Message Types
 
 The protocol uses seven message types — five for consensus (unchanged from Section 8 of the previous revision) and two
 for catch-up:
 
-| Message                                                    | Sender                          | Recipients                       | Size                                |
-|------------------------------------------------------------|---------------------------------|----------------------------------|-------------------------------------|
-| `Propose(h, bₕ)`                                           | Leader                          | All (broadcast)                  | O(\|txs\|)                          |
-| `Vote(h, block_id, sig)`                                   | Each voter                      | All (broadcast)                  | O(\|sig\|)                          |
-| `Finalize(h, sig)`                                         | Each voter                      | All (broadcast)                  | O(\|sig\|)                          |
-| `Notarization(h, bₕ, votes)`                               | Each party on iteration advance | All (broadcast)                  | O(n · \|sig\| + \|txs\|)            |
-| `CatchUpRequest(my_height, my_committed)`                  | Lagging node                    | Single peer (point-to-point)     | O(1)                                |
-| `CatchUpResponse(...)`                                     | Responding peer                 | Requesting node (point-to-point) | O(tail × (\|block\| + n · \|sig\|)) |
-| (dummy vote is a `Vote` where `block_id` identifies `⊥_h`) |                                 |                                  |                                     |
+| Message                                                    | Sender                     | Recipients                       | Size                                |
+|------------------------------------------------------------|----------------------------|----------------------------------|-------------------------------------|
+| `Propose(h, bₕ)`                                           | Leader                     | All (broadcast)                  | O(\|txs\|)                          |
+| `Vote(h, block_id, sig)`                                   | Each voter                 | All (broadcast)                  | O(\|sig\|)                          |
+| `Finalize(h, sig)`                                         | Each voter                 | All (broadcast)                  | O(\|sig\|)                          |
+| `Notarization(h, bₕ, votes)`                               | Each party on view advance | All (broadcast)                  | O(n · \|sig\| + \|txs\|)            |
+| `CatchUpRequest(my_view, my_finalized)`                    | Lagging node               | Single peer (point-to-point)     | O(1)                                |
+| `CatchUpResponse(...)`                                     | Responding peer            | Requesting node (point-to-point) | O(tail × (\|block\| + n · \|sig\|)) |
+| (dummy vote is a `Vote` where `block_id` identifies `⊥_h`) |                            |                                  |                                     |
 
 For n = 100 with Ed25519 signatures (64 bytes) and 10KB block payloads:
 
@@ -495,11 +494,11 @@ For n = 100 with Ed25519 signatures (64 bytes) and 10KB block payloads:
 | Notarization (dummy block) | 6.5 KB           |
 
 > **Design note: block payload in notarization messages.** Including the full block `bₕ` in the `Notarization` message
-> means that on iteration advance, every party broadcasts O(|txs|) to all peers — a total of O(n² · |txs|) aggregate
-> bandwidth for forwarding alone. For the small-block regime targeted by this document (|txs| < 100KB), this is
-> acceptable: with n=100 and 10KB blocks, the forwarding overhead is ~16.5KB × 100 ≈ 1.6MB aggregate per slot, well
-> within
-> the bandwidth budget.
+> means that on view advance, every party broadcasts O(|txs|) to all peers — a total of O(n² · |txs|) aggregate
+> bandwidth
+> for forwarding alone. For the small-block regime targeted by this document (|txs| < 100KB), this is acceptable: with
+> n=100 and 10KB blocks, the forwarding overhead is ~16.5KB × 100 ≈ 1.6MB aggregate per view, well within the bandwidth
+> budget.
 >
 > An alternative is to send `Notarization(h, block_hash, votes)` (omitting the block body) and require peers to fetch
 > the block via a pull request if they missed the `Propose` message. This saves bandwidth at the cost of an additional
@@ -515,19 +514,19 @@ Each party maintains the following state:
 
 | Data structure                                                 | Description                                                                                                             | Bounded by                                                   |
 |----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| `notarized_blocks: BTreeMap<Slot, NotarizedBlock>`             | All notarized blocks (real and dummy) seen so far.                                                                      | Height of the chain (prunable below last commit).            |
-| `committed_height: Slot`                                       | Height of the last explicitly committed (finalized) block.                                                              | Single value.                                                |
-| `current_slot: Slot`                                           | The party's current iteration.                                                                                          | Single value.                                                |
-| `votes_received: HashMap<(Slot, BlockId), Vec<(PeerId, Sig)>>` | Votes collected per slot per block, used to form notarizations.                                                         | O(n) per active slot; old slots pruned.                      |
-| `finalize_received: HashMap<Slot, Vec<(PeerId, Sig)>>`         | Finalize messages collected per slot.                                                                                   | O(n) per active slot; old slots pruned.                      |
-| `pending_proposal: Option<(Slot, Block)>`                      | A proposal received from the leader that cannot yet be validated (deferred; see Section 5.3).                           | At most 1 entry.                                             |
-| `voted_in_slot: HashSet<Slot>`                                 | Slots in which this party has already cast a vote (prevents double-voting).                                             | Bounded by gap between current slot and last committed slot. |
-| `complained_in_slot: HashSet<Slot>`                            | Slots in which this party has already voted for the dummy block (prevents sending both finalize and dummy).             | Same bound.                                                  |
-| `finalized_in_slot: HashSet<Slot>`                             | Slots in which this party has sent a finalize message.                                                                  | Same bound.                                                  |
-| `future_notarizations: BTreeMap<Slot, Notarization>`           | Notarizations received for slots beyond `current_slot`, buffered for later processing or catch-up detection.            | Bounded by catch-up threshold; excess discarded.             |
+| `notarized_blocks: BTreeMap<View, NotarizedBlock>`             | All notarized blocks (real and dummy) seen so far.                                                                      | Length of the chain (prunable below last finalization).      |
+| `finalized_view: View`                                         | The last finalized block height.                                                                                        | Single value.                                                |
+| `current_view: View`                                           | The party's current view.                                                                                               | Single value.                                                |
+| `votes_received: HashMap<(View, BlockId), Vec<(PeerId, Sig)>>` | Votes collected per view per block, used to form notarizations.                                                         | O(n) per active view; old views pruned.                      |
+| `finalize_received: HashMap<View, Vec<(PeerId, Sig)>>`         | Finalize messages collected per view.                                                                                   | O(n) per active view; old views pruned.                      |
+| `pending_proposal: Option<(View, Block)>`                      | A proposal received from the leader that cannot yet be validated (deferred; see Section 5.3).                           | At most 1 entry.                                             |
+| `voted_in_view: HashSet<View>`                                 | Views in which this party has already cast a vote (prevents double-voting).                                             | Bounded by gap between current view and last finalized view. |
+| `dummy_voted_in_view: HashSet<View>`                           | Views in which this party has already voted for the dummy block (prevents sending both finalize and dummy).             | Same bound.                                                  |
+| `finalized_in_view: HashSet<View>`                             | Views in which this party has sent a finalize message.                                                                  | Same bound.                                                  |
+| `future_notarizations: BTreeMap<View, Notarization>`           | Notarizations received for views beyond `current_view`, buffered for later processing or catch-up detection.            | Bounded by catch-up threshold; excess discarded.             |
 | `catching_up: bool`                                            | Whether the party is currently executing the catch-up protocol (Section 8). While true, no consensus messages are sent. | Single value.                                                |
 
-**Pruning rule.** All per-slot data structures can be pruned for slots below `committed_height`. Committed blocks and
+**Pruning rule.** All per-view data structures can be pruned for views below `finalized_view`. Finalized blocks and
 their payloads are passed to the application layer and do not need to be retained by the consensus engine (unless
 serving state-sync requests).
 
@@ -539,7 +538,7 @@ serving state-sync requests).
 | Lemma 3.2 (quorum intersection, votes)              | No                   | Depends on honest voters voting once per height. Unchanged.                                                                                                                 |
 | Lemma 3.3 (quorum intersection, finalize vs. dummy) | No                   | Depends on honest voters sending one of {finalize, dummy}. Unchanged.                                                                                                       |
 | Theorem 3.1 (consistency)                           | **Minor adjustment** | Final step uses inductive uniqueness of notarized blocks per height instead of collision-resistant hash chaining. See Section 3.3.                                          |
-| Lemma 3.4 (synchronized iterations)                 | **Minor adjustment** | Forwarding sends only height-h notarization. Receivers reconstruct the full notarized chain from local state. Timing bound preserved. See Section 6.5.                      |
+| Lemma 3.4 (synchronized iterations)                 | **Minor adjustment** | Forwarding sends only view-h notarization. Receivers reconstruct the full notarized chain from local state. Timing bound preserved. See Section 6.5.                        |
 | Lemma 3.5 (honest leader, 3δ commit)                | No                   | All honest voters have local state to validate the compact proposal. Timing unchanged.                                                                                      |
 | Lemma 3.6 (faulty leader, 3Δ + δ skip)              | No                   | Timer and dummy-vote logic unchanged. Improved to ~2δ with optional Change 5.                                                                                               |
 | Theorem 3.2 (optimistic confirmation, 5δ)           | No                   | Follows from Lemmas 3.4 and 3.5, both preserved.                                                                                                                            |
@@ -559,20 +558,20 @@ CommonWare's published documentation and API surface as of version 2026.3.0.
 The following decisions were made independently by both our design and CommonWare's implementation. Their convergence
 provides additional confidence that these are the correct practical adaptations of CP23.
 
-**No hash chaining.** Both designs replace CP23's `H(b₀, …, bₕ₋₁)` parent hash with a simple view/slot number reference
-to the parent. CommonWare uses `Proposal(view, parent_view, payload_digest)`; our design uses
-`Block(slot, h_parent, txs)`. The motivation is identical: hash chaining requires knowledge of the full prefix chain and
-provides no safety benefit given the quorum intersection property.
+**No hash chaining.** Both designs replace CP23's `H(b₀, …, bₕ₋₁)` parent hash with a simple height reference to the
+parent. CommonWare uses `Proposal(view, parent_view, payload_digest)`; our design uses `Block(h, h_parent, txs)`. The
+motivation is identical: hash chaining requires knowledge of the full prefix chain and provides no safety benefit given
+the quorum intersection property.
 
 **No full-chain forwarding.** Both designs eliminate the CP23 requirement that every forwarding message carry the entire
 notarized blockchain. CommonWare explicitly lists this as a deviation from the paper: "Fetch missing
 notarizations/nullifications as needed rather than assuming each proposal contains a set of all
-notarizations/nullifications for all historical blocks." Our design forwards only the height-h notarization (Change 4).
+notarizations/nullifications for all historical blocks." Our design forwards only the view-h notarization (Change 4).
 
-**Eager nullification on bad proposals.** Both designs immediately send a nullify/complaint vote when the leader's
+**Eager nullification on bad proposals.** Both designs immediately send a nullify/dummy-block vote when the leader's
 proposal fails validation, rather than waiting for the full timeout. CommonWare lists two cases: "Treat local proposal
 failure as immediate timeout expiry and broadcast nullify(v)" and "Treat local verification failure as immediate timeout
-expiry and broadcast nullify(v)." Our Change 5 (eager complaint on invalid payload) is the same optimization.
+expiry and broadcast nullify(v)." Our Change 5 (eager dummy-block vote on invalid payload) is the same optimization.
 
 **Proposal validation against local state.** Both designs validate proposals by checking local state for the required
 notarizations and nullifications, rather than expecting the proposal message to carry proof of its ancestry.
@@ -582,7 +581,8 @@ missing notarizations arrive (Section 5.3).
 **Dedicated catch-up mechanism.** Both designs include a mechanism for lagging nodes to request missing consensus
 artifacts from peers. CommonWare implements this via a `Resolver` component with `Request`/`Response` types for fetching
 missing notarizations and nullifications. Our design uses a simpler `CatchUpRequest`/`CatchUpResponse` protocol (Section
-8) that transmits the committed block plus the consensus tail in a single exchange.
+
+8) that transmits the finalized block plus the consensus tail in a single exchange.
 
 ### 12.2. Differences
 
@@ -590,23 +590,23 @@ The following table summarizes the design differences. Each difference is classi
 deliberate simplification in our design (targeting formal verification), a CommonWare-specific production feature, or a
 genuine design divergence.
 
-| Aspect                         | CommonWare                                                                                                                                                                                                                                            | Our design                                                                                                                                  | Classification                                         |
-|--------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------|
-| **Terminology**                | Distinct message types: `notarize`, `nullify`, `finalize`. Nullification = CP23's notarized dummy block.                                                                                                                                              | Retains CP23 terminology: `Vote` for both real and dummy blocks, `Finalize` for the second-round message.                                   | Divergence (cosmetic).                                 |
-| **Timer structure**            | Two timers per view: `leader_timeout` (2Δ) fires if no proposal received; `activity_timeout` (3Δ) fires if view has not advanced.                                                                                                                     | Single timer per slot (3Δ). No distinction between leader silence and general stall.                                                        | Deliberate simplification. See Section 12.3.           |
-| **Inactive leader skip**       | `skip_timeout` parameter: if the designated leader has not participated in the last N views, nullify immediately (timer set to 0).                                                                                                                    | No skip mechanism. Every leader gets the full timeout regardless of history.                                                                | CommonWare feature. See Section 12.3.                  |
-| **Certification step**         | After notarization, the application can delay or prevent finalization via `CertifiableAutomaton::certify()`. If certification fails, the participant nullifies instead of finalizing. Designed for erasure coding validation.                         | No certification step. Notarization triggers an immediate finalize vote (if the timer has not fired).                                       | Deliberate simplification.                             |
-| **Optimistic finality**        | Explicitly documented "forced inclusion" property: a notarized block without any timeout is speculatively final after 2 hops.                                                                                                                         | Not discussed. Only full finalization (3 hops) is considered.                                                                               | CommonWare feature.                                    |
-| **Message rebroadcast**        | Periodic rebroadcast (`timeout_retry`) of nullify votes and previous-view certificates while stuck in a view. Ensures progress even when messages are dropped.                                                                                        | No rebroadcast. Single forwarding of the notarization on iteration advance. Relies on catch-up protocol for recovery from dropped messages. | CommonWare feature. See Section 12.3.                  |
-| **Retroactive vote broadcast** | Participants opportunistically broadcast votes for all tracked views, including past views. Useful for on-chain reward mechanisms.                                                                                                                    | Votes are only broadcast for the current slot.                                                                                              | CommonWare feature (application-specific).             |
-| **Block data in consensus**    | Consensus operates on block digests (hashes). Block payloads are fetched separately via a `Relay` component.                                                                                                                                          | Consensus operates on full blocks. Payload is included in `Propose` and `Notarization` messages.                                            | Deliberate simplification.                             |
-| **Signature verification**     | Lazy/batched: votes are collected unverified and batch-verified only when a quorum is met. Bisection search isolates invalid signatures. Supports Ed25519 (batch), BLS12-381 multisig (aggregate), secp256r1 (eager), BLS12-381 threshold (succinct). | Not specified. Assumed eager verification. Signature scheme abstracted behind a trait.                                                      | Deliberate simplification.                             |
-| **Leader election**            | Pluggable `Elector` trait with built-in `RoundRobin` and `Random` (BLS threshold VRF). VRF seed embedded in every notarize/nullify message.                                                                                                           | Fixed `H*(h) mod n` (hash of slot number). No VRF.                                                                                          | Deliberate simplification.                             |
-| **Persistence**                | Write-ahead log (segmented journal). Messages synced to disk before sending to prevent Byzantine behavior on unclean restart. In-memory cache on hot path.                                                                                            | Not specified. Persistence strategy deferred to implementation.                                                                             | CommonWare feature.                                    |
-| **Equivocation evidence**      | Explicit types: `ConflictingNotarize`, `ConflictingFinalize`, `NullifyFinalize`. Exported as `Activity` for downstream slashing.                                                                                                                      | Mentioned briefly (Section 5.3) but no explicit types or reporting.                                                                         | CommonWare feature.                                    |
-| **Architecture**               | Four components: `Batcher` (message collection + lazy verification), `Voter` (consensus state machine), `Resolver` (fetch missing data), `Application` (propose/verify). All non-blocking.                                                            | Sans-I/O pure state machine (`step(state, input) → outputs`). Single component. No async boundaries within the consensus engine.            | Deliberate divergence (targeting formal verification). |
-| **Catch-up strategy**          | `Resolver` fetches missing notarizations/nullifications individually. Leaders broadcast best finalization certificate after nullification to help misaligned nodes.                                                                                   | Single `CatchUpRequest`/`CatchUpResponse` round trip returning the full consensus tail.                                                     | Divergence. See Section 12.3.                          |
-| **Epoch / reconfiguration**    | Explicit `Epoch` type. Threshold keys reshared per epoch via DKG.                                                                                                                                                                                     | Not addressed.                                                                                                                              | Out of scope for initial version.                      |
+| Aspect                         | CommonWare                                                                                                                                                                                                                                            | Our design                                                                                                                             | Classification                                         |
+|--------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------|
+| **Terminology**                | Distinct message types: `notarize`, `nullify`, `finalize`. Nullification = CP23's notarized dummy block.                                                                                                                                              | Retains CP23 terminology: `Vote` for both real and dummy blocks, `Finalize` for the second-round message.                              | Divergence (cosmetic).                                 |
+| **Timer structure**            | Two timers per view: `leader_timeout` (2Δ) fires if no proposal received; `activity_timeout` (3Δ) fires if view has not advanced.                                                                                                                     | Single timer per view (3Δ). No distinction between leader silence and general stall.                                                   | Deliberate simplification. See Section 12.3.           |
+| **Inactive leader skip**       | `skip_timeout` parameter: if the designated leader has not participated in the last N views, nullify immediately (timer set to 0).                                                                                                                    | No skip mechanism. Every leader gets the full timeout regardless of history.                                                           | CommonWare feature. See Section 12.3.                  |
+| **Certification step**         | After notarization, the application can delay or prevent finalization via `CertifiableAutomaton::certify()`. If certification fails, the participant nullifies instead of finalizing. Designed for erasure coding validation.                         | No certification step. Notarization triggers an immediate finalize vote (if the timer has not fired).                                  | Deliberate simplification.                             |
+| **Optimistic finality**        | Explicitly documented "forced inclusion" property: a notarized block without any timeout is speculatively final after 2 hops.                                                                                                                         | Not discussed. Only full finalization (3 hops) is considered.                                                                          | CommonWare feature.                                    |
+| **Message rebroadcast**        | Periodic rebroadcast (`timeout_retry`) of nullify votes and previous-view certificates while stuck in a view. Ensures progress even when messages are dropped.                                                                                        | No rebroadcast. Single forwarding of the notarization on view advance. Relies on catch-up protocol for recovery from dropped messages. | CommonWare feature. See Section 12.3.                  |
+| **Retroactive vote broadcast** | Participants opportunistically broadcast votes for all tracked views, including past views. Useful for on-chain reward mechanisms.                                                                                                                    | Votes are only broadcast for the current view.                                                                                         | CommonWare feature (application-specific).             |
+| **Block data in consensus**    | Consensus operates on block digests (hashes). Block payloads are fetched separately via a `Relay` component.                                                                                                                                          | Consensus operates on full blocks. Payload is included in `Propose` and `Notarization` messages.                                       | Deliberate simplification.                             |
+| **Signature verification**     | Lazy/batched: votes are collected unverified and batch-verified only when a quorum is met. Bisection search isolates invalid signatures. Supports Ed25519 (batch), BLS12-381 multisig (aggregate), secp256r1 (eager), BLS12-381 threshold (succinct). | Not specified. Assumed eager verification. Signature scheme abstracted behind a trait.                                                 | Deliberate simplification.                             |
+| **Leader election**            | Pluggable `Elector` trait with built-in `RoundRobin` and `Random` (BLS threshold VRF). VRF seed embedded in every notarize/nullify message.                                                                                                           | Fixed `H*(h) mod n` (hash of height). No VRF.                                                                                          | Deliberate simplification.                             |
+| **Persistence**                | Write-ahead log (segmented journal). Messages synced to disk before sending to prevent Byzantine behavior on unclean restart. In-memory cache on hot path.                                                                                            | Not specified. Persistence strategy deferred to implementation.                                                                        | CommonWare feature.                                    |
+| **Equivocation evidence**      | Explicit types: `ConflictingNotarize`, `ConflictingFinalize`, `NullifyFinalize`. Exported as `Activity` for downstream slashing.                                                                                                                      | Mentioned briefly (Section 5.3) but no explicit types or reporting.                                                                    | CommonWare feature.                                    |
+| **Architecture**               | Four components: `Batcher` (message collection + lazy verification), `Voter` (consensus state machine), `Resolver` (fetch missing data), `Application` (propose/verify). All non-blocking.                                                            | Sans-I/O pure state machine (`step(state, input) → outputs`). Single component. No async boundaries within the consensus engine.       | Deliberate divergence (targeting formal verification). |
+| **Catch-up strategy**          | `Resolver` fetches missing notarizations/nullifications individually. Leaders broadcast best finalization certificate after nullification to help misaligned nodes.                                                                                   | Single `CatchUpRequest`/`CatchUpResponse` round trip returning the full consensus tail.                                                | Divergence. See Section 12.3.                          |
+| **Epoch / reconfiguration**    | Explicit `Epoch` type. Threshold keys reshared per epoch via DKG.                                                                                                                                                                                     | Not addressed.                                                                                                                         | Out of scope for initial version.                      |
 
 ### 12.3. Discussion of selected differences
 
@@ -662,4 +662,4 @@ participants, the view is nullified instead of finalized.
 Our design has no certification step because we include the full block payload in consensus messages (no erasure coding,
 no deferred validation). If we later adopt DispersedSimplex's erasure coding, a certification-like mechanism would
 become necessary — it would correspond to the point where a node successfully decodes and validates the block from
-received fragments before issuing its commit share.
+received fragments before issuing its finalize vote.
