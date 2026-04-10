@@ -1,8 +1,5 @@
 # Practical Wire Protocol Adaptations for Simplex Consensus
 
-**Status:** Proposed
-**Authors:** Renat
-**Last updated:** 2026-04-06
 **References:** Chan & Pass, "Simplex Consensus" (CP23); Shoup, "Sing a Song of Simplex" (DispersedSimplex)
 
 ---
@@ -549,3 +546,120 @@ serving state-sync requests).
 | Theorem 3.3 (worst-case confirmation)               | No                   | Follows from Lemmas 3.5 and 3.6, both preserved.                                                                                                                            |
 | Theorem 3.4 (expected view-based liveness)          | No                   | Follows from Lemmas 3.5 and 3.6, both preserved.                                                                                                                            |
 | Catch-up protocol (Section 8)                       | **New**              | Not present in CP23. Required by compact forwarding (Change 4). Does not affect safety (catching-up node is passive). Restores liveness for lagging nodes after asynchrony. |
+
+## 12. Comparison with CommonWare's Simplex Implementation
+
+CommonWare provides a production-grade, open-source Rust implementation of Simplex consensus (`commonware-consensus`
+crate, module `simplex`). Since it is the most mature public implementation of the Simplex protocol family, this section
+documents the design similarities and differences between our approach and theirs. The comparison is based on
+CommonWare's published documentation and API surface as of version 2026.3.0.
+
+### 12.1. Shared design decisions
+
+The following decisions were made independently by both our design and CommonWare's implementation. Their convergence
+provides additional confidence that these are the correct practical adaptations of CP23.
+
+**No hash chaining.** Both designs replace CP23's `H(b₀, …, bₕ₋₁)` parent hash with a simple view/slot number reference
+to the parent. CommonWare uses `Proposal(view, parent_view, payload_digest)`; our design uses
+`Block(slot, h_parent, txs)`. The motivation is identical: hash chaining requires knowledge of the full prefix chain and
+provides no safety benefit given the quorum intersection property.
+
+**No full-chain forwarding.** Both designs eliminate the CP23 requirement that every forwarding message carry the entire
+notarized blockchain. CommonWare explicitly lists this as a deviation from the paper: "Fetch missing
+notarizations/nullifications as needed rather than assuming each proposal contains a set of all
+notarizations/nullifications for all historical blocks." Our design forwards only the height-h notarization (Change 4).
+
+**Eager nullification on bad proposals.** Both designs immediately send a nullify/complaint vote when the leader's
+proposal fails validation, rather than waiting for the full timeout. CommonWare lists two cases: "Treat local proposal
+failure as immediate timeout expiry and broadcast nullify(v)" and "Treat local verification failure as immediate timeout
+expiry and broadcast nullify(v)." Our Change 5 (eager complaint on invalid payload) is the same optimization.
+
+**Proposal validation against local state.** Both designs validate proposals by checking local state for the required
+notarizations and nullifications, rather than expecting the proposal message to carry proof of its ancestry.
+CommonWare's Resolver component fetches missing certificates on demand; our design defers validation and re-checks when
+missing notarizations arrive (Section 5.3).
+
+**Dedicated catch-up mechanism.** Both designs include a mechanism for lagging nodes to request missing consensus
+artifacts from peers. CommonWare implements this via a `Resolver` component with `Request`/`Response` types for fetching
+missing notarizations and nullifications. Our design uses a simpler `CatchUpRequest`/`CatchUpResponse` protocol (Section
+8) that transmits the committed block plus the consensus tail in a single exchange.
+
+### 12.2. Differences
+
+The following table summarizes the design differences. Each difference is classified by whether it represents a
+deliberate simplification in our design (targeting formal verification), a CommonWare-specific production feature, or a
+genuine design divergence.
+
+| Aspect                         | CommonWare                                                                                                                                                                                                                                            | Our design                                                                                                                                  | Classification                                         |
+|--------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------|
+| **Terminology**                | Distinct message types: `notarize`, `nullify`, `finalize`. Nullification = CP23's notarized dummy block.                                                                                                                                              | Retains CP23 terminology: `Vote` for both real and dummy blocks, `Finalize` for the second-round message.                                   | Divergence (cosmetic).                                 |
+| **Timer structure**            | Two timers per view: `leader_timeout` (2Δ) fires if no proposal received; `activity_timeout` (3Δ) fires if view has not advanced.                                                                                                                     | Single timer per slot (3Δ). No distinction between leader silence and general stall.                                                        | Deliberate simplification. See Section 12.3.           |
+| **Inactive leader skip**       | `skip_timeout` parameter: if the designated leader has not participated in the last N views, nullify immediately (timer set to 0).                                                                                                                    | No skip mechanism. Every leader gets the full timeout regardless of history.                                                                | CommonWare feature. See Section 12.3.                  |
+| **Certification step**         | After notarization, the application can delay or prevent finalization via `CertifiableAutomaton::certify()`. If certification fails, the participant nullifies instead of finalizing. Designed for erasure coding validation.                         | No certification step. Notarization triggers an immediate finalize vote (if the timer has not fired).                                       | Deliberate simplification.                             |
+| **Optimistic finality**        | Explicitly documented "forced inclusion" property: a notarized block without any timeout is speculatively final after 2 hops.                                                                                                                         | Not discussed. Only full finalization (3 hops) is considered.                                                                               | CommonWare feature.                                    |
+| **Message rebroadcast**        | Periodic rebroadcast (`timeout_retry`) of nullify votes and previous-view certificates while stuck in a view. Ensures progress even when messages are dropped.                                                                                        | No rebroadcast. Single forwarding of the notarization on iteration advance. Relies on catch-up protocol for recovery from dropped messages. | CommonWare feature. See Section 12.3.                  |
+| **Retroactive vote broadcast** | Participants opportunistically broadcast votes for all tracked views, including past views. Useful for on-chain reward mechanisms.                                                                                                                    | Votes are only broadcast for the current slot.                                                                                              | CommonWare feature (application-specific).             |
+| **Block data in consensus**    | Consensus operates on block digests (hashes). Block payloads are fetched separately via a `Relay` component.                                                                                                                                          | Consensus operates on full blocks. Payload is included in `Propose` and `Notarization` messages.                                            | Deliberate simplification.                             |
+| **Signature verification**     | Lazy/batched: votes are collected unverified and batch-verified only when a quorum is met. Bisection search isolates invalid signatures. Supports Ed25519 (batch), BLS12-381 multisig (aggregate), secp256r1 (eager), BLS12-381 threshold (succinct). | Not specified. Assumed eager verification. Signature scheme abstracted behind a trait.                                                      | Deliberate simplification.                             |
+| **Leader election**            | Pluggable `Elector` trait with built-in `RoundRobin` and `Random` (BLS threshold VRF). VRF seed embedded in every notarize/nullify message.                                                                                                           | Fixed `H*(h) mod n` (hash of slot number). No VRF.                                                                                          | Deliberate simplification.                             |
+| **Persistence**                | Write-ahead log (segmented journal). Messages synced to disk before sending to prevent Byzantine behavior on unclean restart. In-memory cache on hot path.                                                                                            | Not specified. Persistence strategy deferred to implementation.                                                                             | CommonWare feature.                                    |
+| **Equivocation evidence**      | Explicit types: `ConflictingNotarize`, `ConflictingFinalize`, `NullifyFinalize`. Exported as `Activity` for downstream slashing.                                                                                                                      | Mentioned briefly (Section 5.3) but no explicit types or reporting.                                                                         | CommonWare feature.                                    |
+| **Architecture**               | Four components: `Batcher` (message collection + lazy verification), `Voter` (consensus state machine), `Resolver` (fetch missing data), `Application` (propose/verify). All non-blocking.                                                            | Sans-I/O pure state machine (`step(state, input) → outputs`). Single component. No async boundaries within the consensus engine.            | Deliberate divergence (targeting formal verification). |
+| **Catch-up strategy**          | `Resolver` fetches missing notarizations/nullifications individually. Leaders broadcast best finalization certificate after nullification to help misaligned nodes.                                                                                   | Single `CatchUpRequest`/`CatchUpResponse` round trip returning the full consensus tail.                                                     | Divergence. See Section 12.3.                          |
+| **Epoch / reconfiguration**    | Explicit `Epoch` type. Threshold keys reshared per epoch via DKG.                                                                                                                                                                                     | Not addressed.                                                                                                                              | Out of scope for initial version.                      |
+
+### 12.3. Discussion of selected differences
+
+**Timer structure and inactive leader skip.** CommonWare's two-timer system reduces the cost of a
+crashed-but-not-malicious leader from 3Δ to 2Δ. The `skip_timeout` reduces it further to zero for leaders known to be
+offline. These are meaningful improvements: with Δ = 10s and n = 100, roughly 33 leaders are potentially offline, and
+each costs 30s under our single-timer design versus 0s under CommonWare's skip mechanism.
+
+Our design retains the single-timer approach because it exactly matches CP23 and minimizes the state machine surface for
+formal verification. The two-timer system is a candidate for a future revision — it does not affect safety (nullifying
+early is always safe) and the liveness argument requires only minor adjustment (the timeout bound in Lemma 3.6 improves
+from 3Δ + δ to 2Δ + δ for leader timeout, or to δ for skipped leaders).
+
+**Message rebroadcast.** CommonWare's periodic rebroadcast of nullify votes addresses a real concern: under our design,
+if the single forwarded notarization message is dropped (e.g., due to a transient TCP failure), the receiving node has
+no way to recover except through the catch-up protocol (Section 8). CommonWare's approach is more graceful — stuck nodes
+periodically re-announce their state, giving peers another opportunity to advance.
+
+Our design accepts this tradeoff because the catch-up protocol already handles the recovery case, and adding periodic
+rebroadcast increases the message complexity of the steady-state protocol (every node in a timed-out view sends periodic
+messages). For a small-scale deployment (n ≤ 100) where TCP connections are persistent and reliable, dropped messages
+should be rare.
+
+**Block data separation.** CommonWare runs consensus on block digests and fetches payloads separately via a `Relay`
+component. This is the right architecture for large blocks (megabyte-scale), because it prevents block payloads from
+inflating consensus messages and allows the data availability layer to operate independently.
+
+Our design includes full block payloads in consensus messages. This is simpler (no separate fetch round, no Relay
+component, no data availability concerns) and sufficient for the small-block regime (< 100KB) we are targeting. The
+tradeoff is that our `Notarization` message is O(|txs| + n · |sig|) rather than O(n · |sig|). For 10KB blocks and n =
+100, this adds ~10KB per notarization — acceptable.
+
+Migration to a digest-based design would be required if block sizes grow significantly. At that point, the entire
+protocol should transition to DispersedSimplex's erasure-coded information dispersal, which subsumes both the block
+separation and the data availability concerns.
+
+**Sans-I/O vs. multi-component architecture.** CommonWare splits the consensus engine into four non-blocking
+components (`Batcher`, `Voter`, `Resolver`, `Application`) communicating via channels. This is natural for an async Rust
+system optimizing for throughput: signature verification, block validation, and certificate fetching all proceed
+concurrently without blocking the main consensus loop.
+
+Our design uses a single synchronous state machine (`step(state, input) → outputs`) with no internal async boundaries.
+This is a deliberate choice driven by our formal verification target: the Aeneas → Lean4 translation pipeline operates
+on safe, synchronous Rust. The networking, timers, and I/O live in an unverified shell that feeds inputs to the verified
+state machine and dispatches its outputs. This architecture sacrifices some concurrency (block validation blocks the
+consensus step) but produces a verification-friendly surface with a clean, total `step` function.
+
+**Certification.** CommonWare's certification step is an application-level hook between notarization and finalization.
+It is particularly useful for systems that employ erasure coding: a node can delay its finalize vote until it has
+reconstructed and validated the full block from erasure-coded fragments. If certification fails for a quorum of
+participants, the view is nullified instead of finalized.
+
+Our design has no certification step because we include the full block payload in consensus messages (no erasure coding,
+no deferred validation). If we later adopt DispersedSimplex's erasure coding, a certification-like mechanism would
+become necessary — it would correspond to the point where a node successfully decodes and validates the block from
+received fragments before issuing its commit share.
