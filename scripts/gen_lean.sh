@@ -122,10 +122,8 @@ fi
 # ── Paths ──────────────────────────────────────────────────────────────────────
 LLBC_DIR="$PROJECT_ROOT/target/charon"
 AENEAS_OUT="$PROJECT_ROOT/target/aeneas-out"
-LEAN_DEST="$PROJECT_ROOT/proof/Proof"
+LEAN_DEST="$PROJECT_ROOT/proof/Simplex"
 LLBC_FILE="$LLBC_DIR/simplex.llbc"
-AENEAS_LEAN="$AENEAS_OUT/Simplex.lean"
-TARGET_LEAN="$LEAN_DEST/Consensus.lean"
 
 mkdir -p "$LLBC_DIR" "$AENEAS_OUT"
 
@@ -142,19 +140,34 @@ echo "    LLBC: $LLBC_FILE"
 
 # ── Step 2: Aeneas (LLBC → Lean) ───────────────────────────────────────────────
 echo "==> Running Aeneas..."
-aeneas -backend lean -dest "$AENEAS_OUT" "$LLBC_FILE"
+aeneas -backend lean -split-files -dest "$AENEAS_OUT" "$LLBC_FILE"
 
-# Guard against silent success: Aeneas may exit 0 without writing the file.
-if [ ! -f "$AENEAS_LEAN" ]; then
-  echo "Error: Aeneas did not produce $AENEAS_LEAN" >&2
-  echo "       Contents of $AENEAS_OUT:" >&2
-  ls "$AENEAS_OUT" 2>/dev/null >&2 || echo "       (directory does not exist)" >&2
-  exit 1
-fi
+# Guard against silent success: Aeneas may exit 0 without writing the files.
+for f in Types.lean Funs.lean; do
+  if [ ! -f "$AENEAS_OUT/$f" ]; then
+    echo "Error: Aeneas did not produce $AENEAS_OUT/$f" >&2
+    echo "       Contents of $AENEAS_OUT:" >&2
+    ls "$AENEAS_OUT" 2>/dev/null >&2 || echo "       (directory does not exist)" >&2
+    exit 1
+  fi
+done
 
 # ── Step 3: Place output in Lean project ───────────────────────────────────────
 mkdir -p "$LEAN_DEST"
-cp "$AENEAS_LEAN" "$TARGET_LEAN"
+# Copy auto-generated files (overwritten every run).
+cp "$AENEAS_OUT/Types.lean" "$LEAN_DEST/Types.lean"
+cp "$AENEAS_OUT/Funs.lean"  "$LEAN_DEST/Funs.lean"
+
+# Seed external-definition files from templates if they don't exist yet.
+# These are hand-maintained — never overwrite them.
+for kind in Types Funs; do
+  tpl="$AENEAS_OUT/${kind}External_Template.lean"
+  dest="$LEAN_DEST/${kind}External.lean"
+  if [ -f "$tpl" ] && [ ! -f "$dest" ]; then
+    echo "    Seeding $dest from template (edit manually to fill holes)"
+    cp "$tpl" "$dest"
+  fi
+done
 
 # ── Step 4: Patch known Aeneas binary/library mismatches ───────────────────────
 # As of the pinned nightly above, the Aeneas binary and the Lean library it
@@ -184,53 +197,64 @@ cp "$AENEAS_LEAN" "$TARGET_LEAN"
 #   lt/le/gt fields.
 #   Fix: for any struct literal whose last two fields are `partialOrdInst` then
 #   `cmp`, append max/min/clamp via the library defaults.
-python3 - "$TARGET_LEAN" <<'PYEOF'
+#
+# Bug 4 — wrong argument in Entry inductive constructor return types:
+#   The `Entry` inductive has parameters `(K V : Type) {A : Type}
+#   (corecloneCloneInst : core.clone.Clone A)` but its constructor return
+#   types pass `A` (the implicit Type) instead of `corecloneCloneInst`
+#   (the explicit Clone instance).
+#   Fix: replace `Entry K V A` with `Entry K V corecloneCloneInst`.
+python3 - "$LEAN_DEST/Types.lean" "$LEAN_DEST/Funs.lean" <<'PYEOF'
 import re, sys
 
-content = open(sys.argv[1]).read()
+for path in sys.argv[1:]:
+    content = open(path).read()
+    original = content
 
-# Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
-content = content.replace(
-    'core.cmp.impls.PartialCmpU64.partial_cmp',
-    'core.cmp.impls.PartialOrdU64.partial_cmp',
-)
+    # Bug 4: fix Entry constructor return types.
+    content = content.replace(
+        'alloc.collections.btree.map.entry.Entry K V A',
+        'alloc.collections.btree.map.entry.Entry K V corecloneCloneInst',
+    )
 
-# Bug 2: add missing lt/le/gt/ge to PartialOrd struct literals.
-# Pattern: a struct literal whose last field is `partial_cmp := EXPR` followed
-# immediately by the closing `}` on its own line.
-content = re.sub(
-    r'^  partial_cmp := ([^\n]+)$\n^}$',
-    lambda m: (
-        f'  partial_cmp := {m.group(1)}\n'
-        f'  lt := fun x y => core.cmp.PartialOrd.lt.default {m.group(1)} x y\n'
-        f'  le := fun x y => core.cmp.PartialOrd.le.default {m.group(1)} x y\n'
-        f'  gt := fun x y => core.cmp.PartialOrd.gt.default {m.group(1)} x y\n'
-        f'  ge := fun x y => core.cmp.PartialOrd.ge.default {m.group(1)} x y\n'
-        '}'
-    ),
-    content,
-    flags=re.MULTILINE,
-)
+    # Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
+    content = content.replace(
+        'core.cmp.impls.PartialCmpU64.partial_cmp',
+        'core.cmp.impls.PartialOrdU64.partial_cmp',
+    )
 
-# Bug 3: add missing max/min/clamp to Ord struct literals.
-# Pattern: a struct literal whose last two fields are `partialOrdInst := POI`
-# then `cmp := EXPR` followed immediately by the closing `}` on its own line.
-# max/min/clamp are derived from the partialOrdInst's lt/le/gt projections.
-content = re.sub(
-    r'^  partialOrdInst := ([^\n]+)$\n^  cmp := ([^\n]+)$\n^}$',
-    lambda m: (
-        f'  partialOrdInst := {m.group(1)}\n'
-        f'  cmp := {m.group(2)}\n'
-        f'  max := core.cmp.Ord.max.default {m.group(1)}.lt\n'
-        f'  min := core.cmp.Ord.min.default {m.group(1)}.lt\n'
-        f'  clamp := core.cmp.Ord.clamp.default {m.group(1)}.le {m.group(1)}.lt {m.group(1)}.gt\n'
-        '}'
-    ),
-    content,
-    flags=re.MULTILINE,
-)
+    # Bug 2: add missing lt/le/gt/ge to PartialOrd struct literals.
+    content = re.sub(
+        r'^  partial_cmp := ([^\n]+)$\n^}$',
+        lambda m: (
+            f'  partial_cmp := {m.group(1)}\n'
+            f'  lt := fun x y => core.cmp.PartialOrd.lt.default {m.group(1)} x y\n'
+            f'  le := fun x y => core.cmp.PartialOrd.le.default {m.group(1)} x y\n'
+            f'  gt := fun x y => core.cmp.PartialOrd.gt.default {m.group(1)} x y\n'
+            f'  ge := fun x y => core.cmp.PartialOrd.ge.default {m.group(1)} x y\n'
+            '}'
+        ),
+        content,
+        flags=re.MULTILINE,
+    )
 
-open(sys.argv[1], 'w').write(content)
+    # Bug 3: add missing max/min/clamp to Ord struct literals.
+    content = re.sub(
+        r'^  partialOrdInst := ([^\n]+)$\n^  cmp := ([^\n]+)$\n^}$',
+        lambda m: (
+            f'  partialOrdInst := {m.group(1)}\n'
+            f'  cmp := {m.group(2)}\n'
+            f'  max := core.cmp.Ord.max.default {m.group(1)}.lt\n'
+            f'  min := core.cmp.Ord.min.default {m.group(1)}.lt\n'
+            f'  clamp := core.cmp.Ord.clamp.default {m.group(1)}.le {m.group(1)}.lt {m.group(1)}.gt\n'
+            '}'
+        ),
+        content,
+        flags=re.MULTILINE,
+    )
+
+    if content != original:
+        open(path, 'w').write(content)
 PYEOF
 
-echo "==> Done. Generated: $TARGET_LEAN"
+echo "==> Done. Generated: $LEAN_DEST/{Types,Funs}.lean"

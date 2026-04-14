@@ -13,6 +13,9 @@ rev = "3cd6970451d7bebee6e34fec3bace4e08690a83a"  # AENEAS_TAG: build-2026.04.05
 subDir = "backends/lean"
 
 [[lean_lib]]
+name = "Simplex"
+
+[[lean_lib]]
 name = "Proof"
 
 [[lean_exe]]
