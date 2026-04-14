@@ -1,86 +1,128 @@
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use hashbrown::HashMap;
 
-use crate::error::Error;
 use crate::message::{Finalize, Message, Vote};
-use crate::types::{Block, BlockHash, Duration, Iteration, PlayerId, TimerId};
+use crate::types::{Block, PeerId, TimerId, View};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    MessageReceived { from: PlayerId, msg: Message },
+    MessageReceived(Message),
     TimerExpired(TimerId),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
-    Send { to: PlayerId, msg: Message },
     Broadcast(Message),
     FinalizeBlock(Block),
-    SetTimer(TimerId, Duration),
+    SetTimer(TimerId),
     CancelTimer(TimerId),
 }
 
+#[allow(dead_code)]
 pub struct Consensus {
-    #[allow(dead_code)]
-    player_id: PlayerId,
-    #[allow(dead_code)]
-    players: Vec<PlayerId>,
-    iteration: Iteration,
-    #[allow(dead_code)]
-    votes: HashMap<(Iteration, Option<BlockHash>), Vec<Vote>>,
-    #[allow(dead_code)]
-    finalizes: HashMap<Iteration, Vec<Finalize>>,
+    peer_id: PeerId,
+    peers: Vec<PeerId>,
+    view: View,
+    notarizations: BTreeMap<View, BTreeMap<PeerId, Vote>>,
+    dummy_votes: BTreeMap<View, BTreeMap<PeerId, Vote>>,
+    finalizes: BTreeMap<View, Vec<Finalize>>,
 }
 
 impl Consensus {
-    pub fn new(player_id: PlayerId, players: Vec<PlayerId>) -> Self {
+    pub fn new(peer_id: PeerId, peers: Vec<PeerId>) -> Self {
         Self {
-            player_id,
-            players,
-            iteration: Iteration(1),
-            votes: HashMap::new(),
-            finalizes: HashMap::new(),
+            peer_id,
+            peers,
+            view: View(1),
+            notarizations: BTreeMap::new(),
+            dummy_votes: BTreeMap::new(),
+            finalizes: BTreeMap::new(),
         }
     }
 
-    pub fn current_iteration(&self) -> Iteration {
-        self.iteration
+    pub fn handle_event(&mut self, event: Event) -> Vec<Action> {
+        match event {
+            Event::MessageReceived(msg) => {
+                match msg {
+                    Message::Vote(vote) => {
+                        if vote.block_hash.is_none() {
+                            // Vote for a dummy block.
+                            let view = vote.view;
+                            self.dummy_votes
+                                .entry(vote.view)
+                                .or_default()
+                                .entry(vote.from)
+                                .or_insert(vote);
+                            if self.has_byzantine_quorum(self.dummy_votes[&view].len()) {
+                                // TODO: start a new view and forward actions from the new view.
+                                Vec::from([Action::SetTimer(TimerId(self.view.0 + 1))])
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            // TODO
+                            Vec::new()
+                        }
+                    }
+                    Message::Finalize(_) => {
+                        // TODO
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            Event::TimerExpired(_) => {
+                // TODO.
+                Vec::new()
+            }
+        }
     }
 
-    pub fn handle_event(&mut self, event: Event) -> Result<Vec<Action>, Error> {
-        let _ = event;
-        Ok(Vec::new())
+    fn has_byzantine_quorum(&self, v: usize) -> bool {
+        let n = 4; //self.peers.len() + 1;
+        v > n * 2 / 3
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::{Iteration, PlayerId, TimerId};
+    use crate::consensus::{Action, Consensus, Event};
+    use crate::message::{Message, Vote};
+    use crate::types::{PeerId, TimerId, View};
     use alloc::vec;
 
-    fn three_players() -> (PlayerId, Vec<PlayerId>) {
-        let me = PlayerId(vec![1u8; 32]);
-        let players = vec![
-            PlayerId(vec![1u8; 32]),
-            PlayerId(vec![2u8; 32]),
-            PlayerId(vec![3u8; 32]),
-        ];
-        (me, players)
+    fn peers() -> [PeerId; 4] {
+        [
+            PeerId([0u8; 32]),
+            PeerId([1u8; 32]),
+            PeerId([2u8; 32]),
+            PeerId([3u8; 32]),
+        ]
     }
 
     #[test]
-    fn consensus_starts_at_iteration_one() {
-        let (me, players) = three_players();
-        let c = Consensus::new(me, players);
-        assert_eq!(c.current_iteration(), Iteration(1));
-    }
+    fn when_dummy_certificate_obtained_then_timer_for_next_view_is_set() {
+        let [peer1, peer2, peer3, peer4] = peers();
+        let mut consensus = Consensus::new(peer1, vec![peer2, peer3, peer4]);
 
-    #[test]
-    fn handle_event_returns_ok_on_timer() {
-        let (me, players) = three_players();
-        let mut c = Consensus::new(me, players);
-        let result = c.handle_event(Event::TimerExpired(TimerId(0)));
-        assert!(result.is_ok());
+        let mut actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote {
+            view: View(1),
+            block_hash: None,
+            from: peer1,
+        })));
+        assert!(actions.is_empty());
+        actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote {
+            view: View(1),
+            block_hash: None,
+            from: peer2,
+        })));
+        assert!(actions.is_empty());
+        actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote {
+            view: View(1),
+            block_hash: None,
+            from: peer3,
+        })));
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0], Action::SetTimer(TimerId(2)));
     }
 }

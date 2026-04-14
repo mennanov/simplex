@@ -1,24 +1,24 @@
-use crate::types::{Block, BlockHash, Iteration, PlayerId};
+use crate::types::{Block, BlockHash, PeerId, View};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposal {
-    pub iteration: Iteration,
+    pub view: View,
     pub block: Block,
-    pub from: PlayerId,
+    pub from: PeerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Vote {
-    pub iteration: Iteration,
+    pub view: View,
     /// `None` represents the dummy block ⊥ (timeout vote)
     pub block_hash: Option<BlockHash>,
-    pub from: PlayerId,
+    pub from: PeerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finalize {
-    pub iteration: Iteration,
-    pub from: PlayerId,
+    pub view: View,
+    pub from: PeerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
