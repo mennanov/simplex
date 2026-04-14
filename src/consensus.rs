@@ -23,6 +23,8 @@ pub struct Consensus {
     peer_id: PeerId,
     peers: Vec<PeerId>,
     view: View,
+    // BTreeMap(s) are used because they support efficient pruning of old views in O(log n)
+    // via `split_off(view)` and are better optimized for storing sequential integer keys.
     notarizations: BTreeMap<View, BTreeMap<PeerId, Vote>>,
     dummy_votes: BTreeMap<View, BTreeMap<PeerId, Vote>>,
     finalizes: BTreeMap<View, Vec<Finalize>>,
