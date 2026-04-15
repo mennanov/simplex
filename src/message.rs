@@ -2,7 +2,6 @@ use crate::types::{Block, BlockHash, PeerId, View};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposal {
-    pub view: View,
     pub block: Block,
     pub from: PeerId,
 }
