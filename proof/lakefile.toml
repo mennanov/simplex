@@ -8,7 +8,7 @@ defaultTargets = ["proof"]
 name = "Aeneas"
 git = "https://github.com/AeneasVerif/aeneas"
 # <block name="aeneas-rev" affects="scripts/gen_lean.sh:aeneas-tag">
-rev = "3cd6970451d7bebee6e34fec3bace4e08690a83a"  # AENEAS_TAG: build-2026.04.05.213617
+rev = "8ab2e7e4e47fe73fd5b2a0c061293e00b30013fe"  # AENEAS_TAG: build-2026.04.15.082433
 # </block>
 subDir = "backends/lean"
 

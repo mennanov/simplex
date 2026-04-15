@@ -33,7 +33,7 @@ done
 #   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
 #   4. If `lake build` fails, revisit the patch section (Step 4) below.
 # <block name="charon-tag">
-CHARON_TAG="build-2026.04.03.155040-77d520657e76f265f21a0516c2e4d8d49ba27056"
+CHARON_TAG="build-2026.04.15.180725-fbd54169205bf97e3c42cbfef95ca5807d697bfb"
 # </block>
 
 # The commit hash embedded in AENEAS_TAG must match the `rev` in
@@ -41,7 +41,7 @@ CHARON_TAG="build-2026.04.03.155040-77d520657e76f265f21a0516c2e4d8d49ba27056"
 # Also update proof/lean-toolchain to match the Lean version the new
 # Aeneas library requires (check backends/lean/lean-toolchain in the tarball).
 # <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev">
-AENEAS_TAG="build-2026.04.05.213617-3cd6970451d7bebee6e34fec3bace4e08690a83a"
+AENEAS_TAG="build-2026.04.15.082433-8ab2e7e4e47fe73fd5b2a0c061293e00b30013fe"
 # </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -169,17 +169,13 @@ for kind in Types Funs; do
   fi
 done
 
-# ── Step 4: Patch known Aeneas binary/library mismatches ───────────────────────
-# As of the pinned nightly above, the Aeneas binary and the Lean library it
-# ships with are inconsistent in two ways.  Both are upstream bugs; we work
-# around them here so the generated file compiles without modifying the
-# generator itself.
+# ── Step 4: Patch remaining Aeneas bugs ────────────────────────────────────────
+# All four bugs are still present as of Aeneas build-2026.04.15.082433.
 #
 # Bug 1 — wrong instance name for scalar PartialOrd (binary vs library naming):
 #   The binary emits `core.cmp.impls.PartialCmpU64.partial_cmp` when calling
 #   u64's PartialOrd implementation inside a derived PartialOrd for a newtype.
-#   The Lean library (Aeneas/Std/Scalar/EqOrd.lean) defines this function as
-#   `core.cmp.impls.PartialOrdU64.partial_cmp` via the `scalar` macro.
+#   The Lean library defines it as `core.cmp.impls.PartialOrdU64.partial_cmp`.
 #   Fix: replace every occurrence of the wrong name with the correct one.
 #
 # Bug 2 — incomplete PartialOrd struct literals (missing lt/le/gt/ge):
@@ -192,9 +188,7 @@ done
 #
 # Bug 3 — incomplete Ord struct literals (missing max/min/clamp):
 #   Similarly, `core.cmp.Ord` requires eqInst, partialOrdInst, cmp, max, min,
-#   clamp, but the binary only emits the first three.  The library provides
-#   default implementations for max/min/clamp in terms of the partialOrdInst's
-#   lt/le/gt fields.
+#   clamp, but the binary only emits the first three.
 #   Fix: for any struct literal whose last two fields are `partialOrdInst` then
 #   `cmp`, append max/min/clamp via the library defaults.
 #
