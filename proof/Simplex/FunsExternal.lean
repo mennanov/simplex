@@ -208,3 +208,142 @@ axiom alloc.collections.btree.map.BTreeMap.len
   {K : Type} {V : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
   alloc.collections.btree.map.BTreeMap K V corecloneCloneInst → Result
     Std.Usize
+
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, alloc::alloc::Global>[alloc::alloc::{core::clone::Clone for alloc::alloc::Global}]}::new]:
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 344:4-344:37
+    Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, alloc::alloc::Global>}::new]
+    Visibility: public -/
+@[rust_fun
+  "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, alloc::alloc::Global>}::new"]
+axiom alloc.collections.btree.set.BTreeSetTGlobal.new
+  (T : Type) :
+  Result (alloc.collections.btree.set.BTreeSet T core.core.clone.CloneGlobal)
+
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::insert]:
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 898:4-900:15
+    Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::insert]
+    Visibility: public -/
+@[rust_fun
+  "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::insert"]
+axiom alloc.collections.btree.set.BTreeSet.insert
+  {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A)
+  (corecmpOrdInst : core.cmp.Ord T) :
+  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → T → Result
+    (Bool × (alloc.collections.btree.set.BTreeSet T corecloneCloneInst))
+
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::iter]:
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1243:4-1243:37
+    Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::iter]
+    Visibility: public -/
+@[rust_fun
+  "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::iter"]
+axiom alloc.collections.btree.set.BTreeSet.iter
+  {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
+  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → Result
+    (alloc.collections.btree.set.Iter T)
+
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::is_empty]:
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1290:4-1290:40
+    Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::is_empty]
+    Visibility: public -/
+@[rust_fun
+  "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::is_empty"]
+axiom alloc.collections.btree.set.BTreeSet.is_empty
+  {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
+  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → Result Bool
+
+/-- [alloc::collections::btree::set::{core::iter::traits::iterator::Iterator<&'a (T)> for alloc::collections::btree::set::Iter<'a, T>}::next]:
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1761:4-1761:39
+    Name pattern: [alloc::collections::btree::set::{core::iter::traits::iterator::Iterator<alloc::collections::btree::set::Iter<'a, @T>, &'a @T>}::next]
+    Visibility: public -/
+@[rust_fun
+  "alloc::collections::btree::set::{core::iter::traits::iterator::Iterator<alloc::collections::btree::set::Iter<'a, @T>, &'a @T>}::next"]
+axiom
+  alloc.collections.btree.set.Iter.Insts.CoreIterTraitsIteratorIteratorSharedAT.next
+  {T : Type} :
+  alloc.collections.btree.set.Iter T → Result ((Option T) ×
+    (alloc.collections.btree.set.Iter T))
+
+/-- [alloc::vec::{core::iter::traits::collect::Extend<T> for alloc::vec::Vec<T>}::extend]:
+    Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3867:4-3867:60
+    Name pattern: [alloc::vec::{core::iter::traits::collect::Extend<alloc::vec::Vec<@T>, @T>}::extend]
+    Visibility: public -/
+@[rust_fun
+  "alloc::vec::{core::iter::traits::collect::Extend<alloc::vec::Vec<@T>, @T>}::extend"]
+axiom alloc.vec.Vec.Insts.CoreIterTraitsCollectExtend.extend
+  {T : Type} (A : Type) {I : Type} {Clause1_IntoIter : Type}
+  (coreitertraitscollectIntoIteratorInst :
+  core.iter.traits.collect.IntoIterator I T Clause1_IntoIter) :
+  alloc.vec.Vec T → I → Result (alloc.vec.Vec T)
+
+/-- [simplex::consensus::{core::cmp::PartialEq<simplex::consensus::Event> for simplex::consensus::Event}::ne]:
+    Source: 'src/consensus.rs', lines 6:16-6:25
+    Visibility: public -/
+axiom consensus.Event.Insts.CoreCmpPartialEqEvent.ne
+  : consensus.Event → consensus.Event → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::TimerId> for simplex::types::TimerId}::ne]:
+    Source: 'src/types.rs', lines 51:29-51:38
+    Visibility: public -/
+axiom types.TimerId.Insts.CoreCmpPartialEqTimerId.ne
+  : types.TimerId → types.TimerId → Result Bool
+
+/-- [simplex::message::{core::cmp::PartialEq<simplex::message::Message> for simplex::message::Message}::ne]:
+    Source: 'src/message.rs', lines 23:23-23:32
+    Visibility: public -/
+axiom message.Message.Insts.CoreCmpPartialEqMessage.ne
+  : message.Message → message.Message → Result Bool
+
+/-- [simplex::message::{core::cmp::PartialEq<simplex::message::Finalize> for simplex::message::Finalize}::ne]:
+    Source: 'src/message.rs', lines 17:23-17:32
+    Visibility: public -/
+axiom message.Finalize.Insts.CoreCmpPartialEqFinalize.ne
+  : message.Finalize → message.Finalize → Result Bool
+
+/-- [simplex::message::{core::cmp::PartialEq<simplex::message::Vote> for simplex::message::Vote}::ne]:
+    Source: 'src/message.rs', lines 9:23-9:32
+    Visibility: public -/
+axiom message.Vote.Insts.CoreCmpPartialEqVote.ne
+  : message.Vote → message.Vote → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::BlockHash> for simplex::types::BlockHash}::ne]:
+    Source: 'src/types.rs', lines 20:29-20:38
+    Visibility: public -/
+axiom types.BlockHash.Insts.CoreCmpPartialEqBlockHash.ne
+  : types.BlockHash → types.BlockHash → Result Bool
+
+/-- [simplex::message::{core::cmp::PartialEq<simplex::message::Proposal> for simplex::message::Proposal}::ne]:
+    Source: 'src/message.rs', lines 3:23-3:32
+    Visibility: public -/
+axiom message.Proposal.Insts.CoreCmpPartialEqProposal.ne
+  : message.Proposal → message.Proposal → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::TransactionHash> for simplex::types::TransactionHash}::ne]:
+    Source: 'src/types.rs', lines 23:29-23:38
+    Visibility: public -/
+axiom types.TransactionHash.Insts.CoreCmpPartialEqTransactionHash.ne
+  : types.TransactionHash → types.TransactionHash → Result Bool
+
+/-- [simplex::consensus::{core::cmp::PartialEq<simplex::consensus::Action> for simplex::consensus::Action}::ne]:
+    Source: 'src/consensus.rs', lines 12:16-12:25
+    Visibility: public -/
+axiom consensus.Action.Insts.CoreCmpPartialEqAction.ne
+  : consensus.Action → consensus.Action → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::Block> for simplex::types::Block}::ne]:
+    Source: 'src/types.rs', lines 27:23-27:32
+    Visibility: public -/
+axiom types.Block.Insts.CoreCmpPartialEqBlock.ne
+  : types.Block → types.Block → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::PeerId> for simplex::types::PeerId}::ne]:
+    Source: 'src/types.rs', lines 3:29-3:38
+    Visibility: public -/
+axiom types.PeerId.Insts.CoreCmpPartialEqPeerId.ne
+  : types.PeerId → types.PeerId → Result Bool
+
+/-- [simplex::types::{core::cmp::PartialEq<simplex::types::View> for simplex::types::View}::ne]:
+    Source: 'src/types.rs', lines 6:29-6:38
+    Visibility: public -/
+axiom types.View.Insts.CoreCmpPartialEqView.ne
+  : types.View → types.View → Result Bool

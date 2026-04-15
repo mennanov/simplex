@@ -224,8 +224,9 @@ for path in sys.argv[1:]:
     )
 
     # Bug 2: add missing lt/le/gt/ge to PartialOrd struct literals.
+    # The partial_cmp value may span one or two lines (Aeneas wraps long names).
     content = re.sub(
-        r'^  partial_cmp := ([^\n]+)$\n^}$',
+        r'^  partial_cmp :=\s*\n?\s*(\S+)$\n^}$',
         lambda m: (
             f'  partial_cmp := {m.group(1)}\n'
             f'  lt := fun x y => core.cmp.PartialOrd.lt.default {m.group(1)} x y\n'
@@ -239,8 +240,9 @@ for path in sys.argv[1:]:
     )
 
     # Bug 3: add missing max/min/clamp to Ord struct literals.
+    # The partialOrdInst value may span one or two lines.
     content = re.sub(
-        r'^  partialOrdInst := ([^\n]+)$\n^  cmp := ([^\n]+)$\n^}$',
+        r'^  partialOrdInst :=\s*\n?\s*(\S+)$\n^  cmp := ([^\n]+)$\n^}$',
         lambda m: (
             f'  partialOrdInst := {m.group(1)}\n'
             f'  cmp := {m.group(2)}\n'

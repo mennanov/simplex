@@ -33,3 +33,18 @@ axiom alloc.collections.btree.map.entry.VacantEntry (K : Type) (V : Type) {A :
 @[rust_type "alloc::collections::btree::map::BTreeMap"]
 axiom alloc.collections.btree.map.BTreeMap (K : Type) (V : Type) {A : Type}
   (corecloneCloneInst : core.clone.Clone A) : Type
+
+/-- [alloc::collections::btree::set::BTreeSet]
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 78:0-81:1
+    Name pattern: [alloc::collections::btree::set::BTreeSet]
+    Visibility: public -/
+@[rust_type "alloc::collections::btree::set::BTreeSet"]
+axiom alloc.collections.btree.set.BTreeSet (T : Type) {A : Type}
+  (corecloneCloneInst : core.clone.Clone A) : Type
+
+/-- [alloc::collections::btree::set::Iter]
+    Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 135:0-135:26
+    Name pattern: [alloc::collections::btree::set::Iter]
+    Visibility: public -/
+@[rust_type "alloc::collections::btree::set::Iter"]
+axiom alloc.collections.btree.set.Iter (T : Type) : Type
