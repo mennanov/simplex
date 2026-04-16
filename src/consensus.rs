@@ -23,10 +23,12 @@ pub struct Consensus<L: LeaderElector> {
     leader_elector: L,
     // The peer ID of this node.
     peer_id: PeerId,
-    // All peers in the system.
+    // All peers in the system (including this node).
     peers: Vec<PeerId>,
     // The current view.
     view: View,
+    // Whether this node has voted for a dummy block in the current `view`.
+    has_voted_dummy: bool,
     // BTreeMap(s) are used because they support efficient pruning of old views in O(log n)
     // via `split_off(view)` and are better optimized for storing sequential integer keys.
     notarizations: BTreeMap<View, BTreeMap<PeerId, Vote>>,
@@ -43,6 +45,7 @@ impl<L: LeaderElector> Consensus<L> {
             peer_id,
             peers,
             view: View::new(1),
+            has_voted_dummy: false,
             notarizations: BTreeMap::new(),
             dummy_votes: BTreeMap::new(),
             finalizes: BTreeMap::new(),
@@ -81,9 +84,11 @@ impl<L: LeaderElector> Consensus<L> {
                     _ => Vec::new(),
                 }
             }
-            Event::TimerExpired(_) => {
-                // TODO.
-                Vec::new()
+            Event::TimerExpired(timer_id) => {
+                if timer_id != self.view.into() || self.has_voted_dummy {
+                    return Vec::new();
+                }
+                self.broadcast_dummy_vote()
             }
         }
     }
@@ -95,6 +100,7 @@ impl<L: LeaderElector> Consensus<L> {
 
     fn start_next_view(&mut self) -> Vec<Action> {
         self.view = self.view.next();
+        self.reset_view_state();
         let mut actions = Vec::from([Action::SetTimer(self.view.into())]);
         if self.leader_elector.leader(self.view, &self.peers) == &self.peer_id {
             actions.extend(self.broadcast_proposal());
@@ -131,26 +137,51 @@ impl<L: LeaderElector> Consensus<L> {
         }
     }
 
+    /// Broadcasts a vote for a dummy block for the current view.
+    fn broadcast_dummy_vote(&mut self) -> Vec<Action> {
+        self.has_voted_dummy = true;
+        let mut actions = Vec::new();
+        for peer_id in self.peers.iter() {
+            if *peer_id != self.peer_id {
+                actions.push(Action::SendSigned {
+                    message: Message::Vote(Vote::new(self.view, None, self.peer_id)),
+                    to: *peer_id,
+                });
+            }
+        }
+        actions
+    }
+
+    /// Resets a view-related state.
+    fn reset_view_state(&mut self) {
+        self.has_voted_dummy = false;
+    }
+
     fn has_byzantine_quorum(&self, v: usize) -> bool {
         v > self.peers.len() * 2 / 3
     }
 }
 
 /// Determines the leader for a given view in the system.
+///
+/// All peers are expected to be configured with identical `LeaderElector` implementation.
 pub trait LeaderElector {
     /// Returns a leader for the given `view` among the given `peers`.
     fn leader<'a>(&self, view: View, peers: &'a [PeerId]) -> &'a PeerId;
 }
 
-pub struct RoundRobinLeaderChecker;
+/// A leader elector that uses a round-robin strategy.
+///
+/// Requires the list of peers to be configured in exactly the same order for all peers.
+pub struct RoundRobinLeaderElector;
 
-impl Default for RoundRobinLeaderChecker {
+impl Default for RoundRobinLeaderElector {
     fn default() -> Self {
         Self
     }
 }
 
-impl LeaderElector for RoundRobinLeaderChecker {
+impl LeaderElector for RoundRobinLeaderElector {
     fn leader<'a>(&self, view: View, peers: &'a [PeerId]) -> &'a PeerId {
         let leader_index = view.as_u64() % peers.len() as u64;
         &peers[leader_index as usize]
@@ -159,7 +190,7 @@ impl LeaderElector for RoundRobinLeaderChecker {
 
 #[cfg(test)]
 mod tests {
-    use crate::consensus::{Action, Consensus, Event, RoundRobinLeaderChecker};
+    use crate::consensus::{Action, Consensus, Event, RoundRobinLeaderElector};
     use crate::message::{Message, Vote};
     use crate::types::{PeerId, TimerId, TransactionHash, View};
     use alloc::vec;
@@ -173,11 +204,39 @@ mod tests {
         ]
     }
 
+    fn new_consensus() -> (
+        Consensus<RoundRobinLeaderElector>,
+        PeerId,
+        PeerId,
+        PeerId,
+        PeerId,
+    ) {
+        let leader_elector = RoundRobinLeaderElector;
+        let [peer0, peer1, peer2, peer3] = peers();
+        let consensus = Consensus::new(peer0, vec![peer0, peer1, peer2, peer3], leader_elector);
+        (consensus, peer0, peer1, peer2, peer3)
+    }
+
+    fn new_consensus_with_leader(
+        leader_index: usize,
+    ) -> (
+        Consensus<RoundRobinLeaderElector>,
+        PeerId,
+        PeerId,
+        PeerId,
+        PeerId,
+    ) {
+        let leader_elector = RoundRobinLeaderElector;
+        let peers = peers();
+        let leader = peers[leader_index];
+        let [peer0, peer1, peer2, peer3] = peers;
+        let consensus = Consensus::new(leader, vec![peer0, peer1, peer2, peer3], leader_elector);
+        (consensus, peer0, peer1, peer2, peer3)
+    }
+
     #[test]
     fn when_dummy_certificate_is_obtained_then_timer_for_next_view_is_set() {
-        let leader_checker = RoundRobinLeaderChecker;
-        let [peer0, peer1, peer2, peer3] = peers();
-        let mut consensus = Consensus::new(peer0, vec![peer0, peer1, peer2, peer3], leader_checker);
+        let (mut consensus, peer0, peer1, peer2, _) = new_consensus();
 
         let mut actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote::new(
             View::new(1),
@@ -201,10 +260,8 @@ mod tests {
     }
 
     #[test]
-    fn when_node_becomes_a_leader_then_proposals_are_broadcasted_to_peers() {
-        let leader_checker = RoundRobinLeaderChecker;
-        let [peer0, peer1, peer2, peer3] = peers();
-        let mut consensus = Consensus::new(peer2, vec![peer0, peer1, peer2, peer3], leader_checker);
+    fn when_node_becomes_a_leader_then_proposals_are_broadcasted() {
+        let (mut consensus, peer0, peer1, peer2, peer3) = new_consensus_with_leader(2);
         let transaction = TransactionHash::new([0u8; 32]);
 
         consensus.propose(transaction);
@@ -222,11 +279,11 @@ mod tests {
         let actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote::new(
             View::new(1),
             None,
-            peer2,
+            peer3,
         ))));
 
-        // The leader should broadcast the proposal to all other peers (peer0, peer1, peer3),
-        // but NOT to itself.
+        // The leader should broadcast the proposal to all other peers (peer1, peer2, peer3),
+        // but NOT to itself (peer0).
         for peer in [peer0, peer1, peer3] {
             assert!(
                 actions.iter().any(|action| matches!(
@@ -239,5 +296,37 @@ mod tests {
                 "expected proposal to be sent to {peer:?}"
             );
         }
+    }
+
+    #[test]
+    fn when_view_timer_expires_then_dummy_votes_are_broadcasted() {
+        let (mut consensus, peer0, peer1, peer2, peer3) = new_consensus();
+
+        let actions = consensus.handle_event(Event::TimerExpired(TimerId::new(1)));
+
+        // The node should broadcast dummy votes to all other peers (peer1, peer2, peer3),
+        // but NOT to itself (peer0).
+        for peer in [peer1, peer2, peer3] {
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    Action::SendSigned { message: Message::Vote(vote), to }
+                        if *to == peer
+                            && vote.from() == peer0
+                            && vote.view() == View::new(1)
+                            && vote.block_hash().is_none()
+                )),
+                "expected dummy vote to be sent to {peer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn when_view_timer_expires_then_dummy_votes_are_broadcasted_only_once_per_view() {
+        let (mut consensus, _, _, _, _) = new_consensus();
+
+        consensus.handle_event(Event::TimerExpired(TimerId::new(1)));
+        let actions = consensus.handle_event(Event::TimerExpired(TimerId::new(1)));
+        assert!(actions.is_empty());
     }
 }
