@@ -299,6 +299,35 @@ mod tests {
     }
 
     #[test]
+    fn when_multiple_views_are_skipped_then_proposal_is_broadcasted_by_leader() {
+        let (mut consensus, peer0, peer1, peer2, peer3) = new_consensus_with_leader(3);
+        let transaction = TransactionHash::new([0u8; 32]);
+        consensus.propose(transaction);
+
+        // Advance through View 1 and View 2 using dummy votes.
+        for v in 1..=2 {
+            let view = View::new(v);
+            consensus.handle_event(Event::MessageReceived(Message::Vote(Vote::new(
+                view, None, peer0,
+            ))));
+            consensus.handle_event(Event::MessageReceived(Message::Vote(Vote::new(
+                view, None, peer1,
+            ))));
+            let actions = consensus.handle_event(Event::MessageReceived(Message::Vote(Vote::new(
+                view, None, peer2,
+            ))));
+
+            if v == 2 {
+                // In View 3, peer3 is the leader and should broadcast the proposal to others.
+                for peer in [peer0, peer1, peer2] {
+                    assert!(actions.iter().any(|a| matches!(a, Action::SendSigned { to, message: Message::Propose(p) }
+                        if *to == peer && p.from() == peer3 && p.block().transactions().contains(&transaction))));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn when_view_timer_expires_then_dummy_votes_are_broadcasted() {
         let (mut consensus, peer0, peer1, peer2, peer3) = new_consensus();
 
