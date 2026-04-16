@@ -1,12 +1,26 @@
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct PeerId(pub [u8; 32]);
+pub struct PeerId([u8; 32]);
+
+impl PeerId {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct View(pub u64);
+pub struct View(u64);
 
 impl View {
+    pub fn new(n: u64) -> Self {
+        Self(n)
+    }
+
     pub fn genesis() -> Self {
         Self(0)
     }
@@ -15,21 +29,45 @@ impl View {
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
     }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct BlockHash(pub [u8; 32]);
+pub struct BlockHash([u8; 32]);
+
+impl BlockHash {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
-pub struct TransactionHash(pub [u8; 32]);
+pub struct TransactionHash([u8; 32]);
+
+impl TransactionHash {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 /// Represents a non-dummy block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    pub view: View,
-    pub parent_view: View,
-    pub transactions: Vec<TransactionHash>,
-    pub block_hash: BlockHash,
+    view: View,
+    parent_view: View,
+    transactions: Vec<TransactionHash>,
+    block_hash: BlockHash,
 }
 
 impl Block {
@@ -46,13 +84,39 @@ impl Block {
             block_hash,
         }
     }
+
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    pub fn parent_view(&self) -> View {
+        self.parent_view
+    }
+
+    pub fn transactions(&self) -> &[TransactionHash] {
+        &self.transactions
+    }
+
+    pub fn block_hash(&self) -> BlockHash {
+        self.block_hash
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TimerId(pub u64);
+pub struct TimerId(u64);
+
+impl TimerId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
 
 impl From<View> for TimerId {
     fn from(view: View) -> Self {
-        Self(view.0)
+        Self(view.as_u64())
     }
 }
