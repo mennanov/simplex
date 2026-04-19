@@ -66,35 +66,53 @@ When the leader `L_h` enters view `h`, it multicasts:
 ```
 
 where `bₕ = (h, h_parent, txs)` is the leader's new block, and `π_chain` is the sequence of notarizations for every
-view in `[state.finalized_view + 1, h - 1]` inclusive, ordered by view. `π_chain` may be empty (when
-`state.finalized_view + 1 ≥ h`, i.e., immediately after finalization catches up to the tip).
+view in `[chain_start, h - 1]` inclusive, ordered by view, where `chain_start = min(finalized_view + 1, h_parent)`.
+The chain always includes the notarization for `h_parent` (when `h_parent > 0`): under long runs of unfinalized
+non-dummy views, `h_parent` may itself be at `finalized_view`, in which case the chain extends one view below
+`finalized_view + 1` to keep the parent's notarization inline with the proposal. In the common case
+(`h_parent > finalized_view`), the rule collapses to `chain_start = finalized_view + 1`.
+
+`π_chain` may be empty (when `h_parent = 0` and `h = 1`, i.e., the first real proposal after genesis).
 
 Each notarization in `π_chain` witnesses either a non-dummy block (with its block payload) or a dummy block at its
 view.
 
 The leader always has these notarizations: it built its own notarized chain to reach view `h`, so by construction it
-holds a notarization for every view between `finalized_view + 1` and `h - 1`.
+holds a notarization for every view from `finalized_view` up to `h - 1`.
 
 ## 4. Proposal Validation
 
 On receiving `⟨propose, h, bₕ, π_chain⟩_L`, voter `i` checks:
 
 1. **Well-formedness.** `bₕ ≠ ⊥_h`, `0 ≤ h_parent < h`, `|bₕ| ≤ MAX_BLOCK_SIZE`, signed by `leader(h)`.
-2. **View alignment.** `h == state.current_view`, or the voter can advance to `h` using `π_chain` (see step 4).
+2. **View alignment.** `h ≥ state.current_view`. If `h > state.current_view`, the voter advances using `π_chain` (see
+   step 4).
 3. **Parent view not below finalized.** `h_parent ≥ state.finalized_view`. (A proposal extending a finalized fork
    cannot be notarized by any honest quorum.)
-4. **Chain verifies.** Every notarization in `π_chain` has a valid 2n/3 quorum signature, covers a distinct view in
-   `[state.finalized_view + 1, h - 1]`, and collectively forms a contiguous sequence. The non-dummy notarization at
-   `h_parent` (if `h_parent > state.finalized_view`) witnesses `bₕ`'s claimed parent.
-5. **Payload.** Opaque — no application-level validation.
+4. **Chain coverage and bounds.** The voter considers only chain entries with view `≥ state.finalized_view` as
+   *relevant*; entries below are silently ignored (not verified, not installed, not broadcast). The relevant
+   subsequence must be contiguous ascending and every relevant entry must have a valid 2n/3 quorum signature and a
+   view strictly less than `h`. Together with the voter's local `notarized_blocks`, the relevant chain entries must
+   cover every view in `[state.finalized_view + 1, h - 1]`. This tolerates asymmetric finalization (an honest leader
+   whose `finalized_view` is below the voter's will attach entries below the voter's `finalized_view`, which the
+   voter harmlessly ignores) without creating a CPU-amplification vector (the voter only verifies signatures on
+   relevant entries). No maximum chain length is enforced at the consensus layer — honest chains can grow
+   arbitrarily long during extended asynchronous periods, and a bound would break liveness.
+5. **Parent is non-dummy, supplied by chain.** When `h_parent > 0`, the notarization at `h_parent` must be in `π_chain`
+   (the leader's chain rule guarantees this) and must witness a non-dummy block matching `bₕ`'s parent reference.
+   When `h_parent = 0`, the genesis block is the parent and no notarization is needed.
+6. **Intermediate views are dummy.** For every view `v` in `(h_parent, h)`, the chain must contain a notarization
+   witnessing a dummy block at `v`. This prevents a Byzantine leader from pointing `h_parent` past a real non-dummy
+   notarization.
+7. **Payload.** Opaque — no application-level validation.
 
-If all checks pass, the voter installs every notarization from `π_chain` into its local `notarized_blocks`, advances
-`current_view` to `h`, and multicasts `⟨vote, h, bₕ⟩_i`. If the voter has already voted in view `h` (real or dummy
-vote), it skips the vote but still installs the chain contents.
+If all checks pass, the voter installs every new notarization from `π_chain` into its local `notarized_blocks`,
+advances `current_view` to `h`, and multicasts `⟨vote, h, bₕ⟩_i`. If the voter has already voted in view `h` (real or
+dummy vote), it skips the vote but still installs the chain contents.
 
 The voter does **not** need notarizations for views below `state.finalized_view`, nor does it need to traverse each
-intermediate view. The chain itself is a cryptographic witness that the claimed sequence of views was notarized by
-the honest quorum.
+intermediate view. Parent and intermediate-dummy checks are satisfied entirely from `π_chain`; local state is
+consulted only for the chain-coverage check in step 4, and only to fill in views below the chain's lower bound.
 
 ### 4.1. Deferred validation
 
@@ -172,8 +190,11 @@ State {
     current_view:      View                                   // starts at 0
     finalized_view:    View                                   // last finalized height
     notarized_blocks:  BTreeMap<View, (Block, Notarization)>  // prunable below finalized_view
-    votes:             Map<(View, Option<BlockHash>), Vec<(PeerId, Sig)>>
-    finalizes:         Map<View, Vec<(PeerId, Sig)>>
+    known_blocks:      Map<BlockHash, Block>                  // blocks seen via Propose or Notarization
+    votes:             Map<(View, Option<BlockHash>), Map<PeerId, Sig>>  // deduped by signer
+    finalizes:         Map<View, Map<PeerId, Sig>>                       // deduped by signer
+    pending_quorums:   Set<(View, BlockHash)>                 // vote quorum reached but block body not yet known
+    pending_finalizations: Set<View>                          // finalize quorum reached but block not yet notarized locally
     voted_view:        Set<View>                              // views where we cast a real vote
     dummy_voted_view:  Set<View>                              // views where we dummy-voted
     finalized_in_view: Set<View>                              // views where we sent finalize
@@ -185,7 +206,12 @@ network's current view from the first arriving proposal.
 
 **Configuration parameters** (no safety impact):
 
-- `MAX_BLOCK_SIZE`: upper bound on proposal payload size.
+- `MAX_BLOCK_SIZE`: upper bound on proposal payload size. Proposals exceeding this are dropped.
+
+(Message-size limits for oversized proposals — e.g., proposals with very long chains during extended
+asynchronous periods — are the responsibility of the P2P transport layer and are not enforced here: honest chains
+can legitimately grow arbitrarily long under extended partial synchrony pre-GST, and imposing a consensus-level
+cap would break liveness.)
 
 ## 9. State Machine
 
@@ -232,14 +258,39 @@ function enter_view(state, view) -> Vec<Action>:
     if leader(view) == state.id:
         h_parent = highest notarized non-dummy block height, or 0
         block    = Block(view, h_parent, build_txs())
-        chain    = [state.notarized_blocks[v].notarization
-                    for v in (state.finalized_view + 1) .. (view - 1)]
+
+        // Chain covers [min(finalized_view + 1, h_parent), view - 1]. This always
+        // includes h_parent's notarization (when h_parent > 0), so the voter can
+        // validate the parent reference from the chain alone without depending on
+        // its local notarized_blocks. Normally h_parent >= finalized_view + 1 and
+        // this collapses to the common case; under long runs of unfinalized
+        // non-dummy views, the chain may start below finalized_view + 1.
+        chain_start = h_parent if h_parent > 0 and h_parent < state.finalized_view + 1
+                      else state.finalized_view + 1
+
+        // If the node arrived at this view via forwarded notarization from a
+        // future view (§5), it may be missing notarizations for intermediate
+        // views. Without those, it cannot construct a valid chain. Silently
+        // abort proposal generation; the view will time out after 3Δ and the
+        // network will advance via the normal skip path (Lemma 3.6). The node
+        // still participates as a voter in this view (dummy-voting on timeout).
+        if any v in (chain_start .. (view - 1)) where v not in state.notarized_blocks:
+            return actions
+
+        chain = [state.notarized_blocks[v].notarization
+                 for v in chain_start .. (view - 1)]
         actions.append(Broadcast(Propose(view, block, chain)))
 
     return actions
 ```
 
 ### 9.3. Handling messages
+
+`verify_notarization(view, block, votes)` returns `true` iff `votes` is a set of at least `quorum()` vote signatures
+by *distinct* validator identities, each signing `(view, hash(block))` (or `(view, None)` if `block` is a dummy).
+Distinctness is essential: a single Byzantine validator must not be able to fabricate a notarization by signing
+multiple times. The same distinctness requirement applies to the `Vote` and `Finalize` handlers below, where the
+`votes`/`finalizes` maps are keyed by `PeerId` to enforce this.
 
 ```
 function handle_message(state, from, msg) -> Vec<Action>:
@@ -259,26 +310,69 @@ function handle_message(state, from, msg) -> Vec<Action>:
             // Parent not below finalized
             if block.h_parent < state.finalized_view: return []
 
-            // Verify chain: contiguous notarizations covering
-            // [state.finalized_view + 1, view - 1]
-            expected_range = (state.finalized_view + 1) .. (view - 1)
-            if chain.views() != expected_range:      return []
-            for notarization in chain:
+            // Chain well-formedness and bounds. We process only entries at
+            // or above voter.finalized_view — entries below it are irrelevant
+            // (already finalized, not needed for coverage, parent, or
+            // intermediate checks) and are silently ignored without signature
+            // verification. This tolerates asymmetric finalization (leader's
+            // finalized_view may be lower than voter's, so honest chains may
+            // include entries below voter.finalized_view) while avoiding CPU
+            // amplification from Byzantine attachment of pruned historical
+            // notarizations.
+            //
+            // No hard cap on chain length: under long asynchronous periods,
+            // honest chains can legitimately grow arbitrarily long. Message
+            // size limits are a P2P-layer concern, not a consensus concern.
+            relevant = [n for n in chain if n.view >= state.finalized_view]
+            if not relevant.is_contiguous_ascending(): return []
+            for notarization in relevant:
+                if notarization.view >= view:          return []
                 if not verify_notarization(notarization): return []
 
-            // Parent check: the chain's notarization at h_parent (if in range)
-            // must be for block.h_parent's referenced parent
-            if block.h_parent > state.finalized_view:
-                parent_not = chain.find(block.h_parent)
-                if parent_not.block.is_dummy():      return []
+            // Build the set of views covered by (relevant chain ∪ local notarized_blocks).
+            // This set must include every view in [finalized_view + 1, view - 1].
+            covered = { n.view for n in relevant }
+                    ∪ { v for v in state.notarized_blocks.keys() if v < view }
+            for v in (state.finalized_view + 1) .. (view - 1):
+                if v not in covered:                   return []
 
-            // Install chain, advance view
+            // Parent check: the chain must supply h_parent's notarization and
+            // it must witness a non-dummy block. The leader's chain rule
+            // (§3) guarantees h_parent is always in the chain when h_parent > 0.
+            // Filter 3 guarantees h_parent >= finalized_view, so the parent is
+            // in the relevant range.
+            if block.h_parent > 0:
+                parent = relevant.find(block.h_parent)
+                if parent is None or parent.block.is_dummy(): return []
+
+            // Intermediate-dummy enforcement: every view strictly between
+            // block.h_parent and view must have a notarization in the chain
+            // witnessing a DUMMY block. Range is (h_parent, view), all within
+            // the relevant range since h_parent >= finalized_view.
+            for v in (block.h_parent + 1) .. (view - 1):
+                intermediate = relevant.find(v)
+                if intermediate is None:              return []
+                if not intermediate.block.is_dummy(): return []
+
+            // Install relevant chain entries that are new to local state,
+            // re-broadcast them, and resolve any pending quorums/finalizations
+            // they unlock.
             actions = []
-            for notarization in chain:
-                state.notarized_blocks[notarization.view] = (notarization.block, notarization.votes)
-                actions.append(Broadcast(Notarization(notarization.view,
-                                                     notarization.block,
-                                                     notarization.votes)))
+            for notarization in relevant:
+                actions.extend(maybe_resolve_pending_quorum(state,
+                    notarization.view, hash(notarization.block), notarization.block))
+                if notarization.view not in state.notarized_blocks:
+                    state.notarized_blocks[notarization.view] = (notarization.block, notarization.votes)
+                    actions.extend(on_notarization_installed(state, notarization.view))
+                    actions.append(Broadcast(Notarization(notarization.view,
+                                                         notarization.block,
+                                                         notarization.votes)))
+
+            // Register the proposed block and resolve any pending quorum for it
+            // (votes may have arrived ahead of the proposal).
+            actions.extend(maybe_resolve_pending_quorum(state, view, hash(block), block))
+
+            // Advance to the proposal's view if we're behind
             if view > state.current_view:
                 actions.extend(enter_view(state, view))
 
@@ -293,7 +387,10 @@ function handle_message(state, from, msg) -> Vec<Action>:
         Vote(view, block_hash, sig):
             if view < state.finalized_view: return []
             if not verify_sig(from, (view, block_hash), sig): return []
-            state.votes[(view, block_hash)].append((from, sig))
+            // Deduplicate by PeerId: a Byzantine node cannot reach quorum
+            // single-handedly by spamming valid-signed duplicates.
+            if from in state.votes[(view, block_hash)]: return []
+            state.votes[(view, block_hash)][from] = sig
             if len(state.votes[(view, block_hash)]) == quorum():
                 return handle_quorum(state, view, block_hash)
             return []
@@ -301,47 +398,156 @@ function handle_message(state, from, msg) -> Vec<Action>:
         Finalize(view, sig):
             if view < state.finalized_view: return []
             if not verify_sig(from, ("finalize", view), sig): return []
-            state.finalizes[view].append((from, sig))
+            // Deduplicate by PeerId, same rationale as Vote.
+            if from in state.finalizes[view]: return []
+            state.finalizes[view][from] = sig
             if len(state.finalizes[view]) == quorum():
-                block = state.notarized_blocks[view].block
-                state.finalized_view = view
-                prune_state_below(state, view)
-                return [CancelTimer(view), FinalizeBlock(view, block)]
+                return maybe_finalize(state, view)
             return []
 
         Notarization(view, block, votes):
-            if view < state.current_view: return []
+            // Reject notarizations for already-finalized views. Without this
+            // guard, a Byzantine peer can replay valid historical notarizations
+            // for pruned views; verify_notarization passes, notarized_blocks is
+            // re-populated with a view that will never be pruned again
+            // (maybe_finalize won't fire for an already-finalized view), and
+            // on_notarization_installed emits a stale Finalize broadcast.
+            if view <= state.finalized_view: return []
+            if view < state.current_view and view in state.notarized_blocks: return []
             if not verify_notarization(view, block, votes): return []
-            state.notarized_blocks[view] = (block, votes)
-            if view == state.current_view:
-                return [Broadcast(Notarization(view, block, votes))]
-                     ++ enter_view(state, view + 1)
-            return []
+            newly_installed = view not in state.notarized_blocks
+            if newly_installed:
+                state.notarized_blocks[view] = (block, votes)
+
+            actions = []
+
+            // Resolve any pending quorum and any pending finalization for this view
+            actions.extend(maybe_resolve_pending_quorum(state, view, hash(block), block))
+            if newly_installed:
+                actions.extend(on_notarization_installed(state, view))
+
+            // Advance if this notarization puts us at or past current_view.
+            // Advancing by more than one view at once is safe: any future
+            // proposal's chain will cover any remaining intermediate gaps.
+            if view >= state.current_view:
+                actions.append(Broadcast(Notarization(view, block, votes)))
+                actions.extend(enter_view(state, view + 1))
+            return actions
 ```
 
 ### 9.4. Quorum reached
 
 ```
 function handle_quorum(state, view, block_hash) -> Vec<Action>:
-    actions = []
-
-    if block_hash is Some(h):
-        block = find_block_for_hash(h)
-        votes = state.votes[(view, block_hash)]
-        state.notarized_blocks[view] = (block, votes)
-
-        if view not in state.dummy_voted_view and view not in state.finalized_in_view:
-            state.finalized_in_view.add(view)
-            actions.append(Broadcast(Finalize(view, sign("finalize", view))))
-    else:
+    if block_hash is None:
+        // Dummy-block quorum: block body is synthetic, always available
         dummy = DummyBlock(view)
         votes = state.votes[(view, None)]
         state.notarized_blocks[view] = (dummy, votes)
+        actions = on_notarization_installed(state, view)
+        actions.append(Broadcast(Notarization(view, dummy, votes)))
+        // Only advance if this notarization is at or past current_view.
+        // A late-arriving quorum for an older view should still install and
+        // broadcast, but must not regress current_view.
+        if view >= state.current_view:
+            actions.extend(enter_view(state, view + 1))
+        return actions
 
-    actions.append(Broadcast(Notarization(view,
-                                         state.notarized_blocks[view].block,
-                                         state.notarized_blocks[view].votes)))
-    actions.extend(enter_view(state, view + 1))
+    // Real-block quorum: block body may not have arrived yet
+    h = block_hash
+    if h not in state.known_blocks:
+        // Votes raced ahead of the proposal. Mark quorum as pending; it will
+        // be resolved when the block arrives via Propose or Notarization.
+        state.pending_quorums.add((view, h))
+        return []
+
+    return finalize_notarization(state, view, h)
+
+function finalize_notarization(state, view, block_hash) -> Vec<Action>:
+    block = state.known_blocks[block_hash]
+    votes = state.votes[(view, Some(block_hash))]
+    state.notarized_blocks[view] = (block, votes)
+
+    // on_notarization_installed handles the Finalize broadcast centrally
+    // (see §9.4 comment) and resolves any pending finalization.
+    actions = on_notarization_installed(state, view)
+
+    actions.append(Broadcast(Notarization(view, block, votes)))
+    // Only advance if this notarization is at or past current_view. See
+    // handle_quorum for rationale.
+    if view >= state.current_view:
+        actions.extend(enter_view(state, view + 1))
+    return actions
+
+function maybe_resolve_pending_quorum(state, view, block_hash, block) -> Vec<Action>:
+    // Called from Propose and Notarization handlers when a block body arrives.
+    // Record the block and, if a quorum was previously pending for it, complete
+    // the notarization now.
+    state.known_blocks[block_hash] = block
+    actions = []
+    if (view, block_hash) in state.pending_quorums:
+        state.pending_quorums.remove((view, block_hash))
+        actions.extend(finalize_notarization(state, view, block_hash))
+    return actions
+
+function maybe_finalize(state, view) -> Vec<Action>:
+    // Finalize quorum has been reached for `view`. A quorum of Finalize
+    // messages is a cryptographic witness that the network has finalized
+    // `view`, so we advance finalized_view immediately — even if we lack
+    // the block body locally. This prevents a permanent liveness deadlock
+    // in which the node cannot accept future proposals (coverage check
+    // demands notarizations for views below the true finalized height that
+    // were never observed) and cannot advance finalized_view (the block
+    // for `view` hasn't arrived).
+    //
+    // The FinalizeBlock action — the app-layer handoff — is deferred until
+    // the block body is known locally. See on_notarization_installed.
+    if view <= state.finalized_view:
+        // Already finalized; ignore duplicate quorum.
+        return []
+
+    state.finalized_view = view
+    prune_state_below(state, view)
+    actions = [CancelTimer(view)]
+
+    if view not in state.notarized_blocks:
+        // Block body not yet known. Defer the FinalizeBlock handoff until
+        // on_notarization_installed fires for this view.
+        state.pending_finalizations.add(view)
+        return actions
+
+    block = state.notarized_blocks[view].block
+    actions.append(FinalizeBlock(view, block))
+    return actions
+
+function on_notarization_installed(state, view) -> Vec<Action>:
+    // Called whenever a view's notarization is newly added to
+    // state.notarized_blocks, regardless of whether it was installed from a
+    // local vote quorum, a forwarded Notarization message, or a proposal's
+    // π_chain. This centralization ensures CP23 Step 4 (finalize broadcast on
+    // first notarization sighting) fires uniformly for all delivery paths —
+    // otherwise nodes that catch up via forwarding would not contribute to
+    // finalization quorums, risking permanent finalization stalls.
+    actions = []
+
+    // CP23 Step 4: broadcast Finalize(view) upon seeing a notarized non-dummy
+    // block at `view` for the first time, provided we didn't dummy-vote at
+    // `view` (CP23 Lemma 3.3) and haven't already finalized.
+    block = state.notarized_blocks[view].block
+    if not block.is_dummy()
+       and view not in state.dummy_voted_view
+       and view not in state.finalized_in_view:
+        state.finalized_in_view.add(view)
+        actions.append(Broadcast(Finalize(view, sign("finalize", view))))
+
+    // Resolve any pending finalization whose FinalizeBlock handoff was
+    // deferred because the block body was unknown at Finalize-quorum time.
+    // finalized_view was already advanced in maybe_finalize; we only need
+    // to emit the FinalizeBlock event now that the block is available.
+    if view in state.pending_finalizations:
+        state.pending_finalizations.remove(view)
+        actions.append(FinalizeBlock(view, block))
+
     return actions
 ```
 
@@ -356,6 +562,53 @@ function handle_timeout(state, view) -> Vec<Action>:
     state.dummy_voted_view.add(view)
     return [Broadcast(Vote(view, None, sign("vote", view, None)))]
 ```
+
+### 9.6. Pruning
+
+```
+function prune_state_below(state, view):
+    // Called from maybe_finalize after finalized_view advances to `view`.
+    // Drops per-view data that can no longer influence the state machine.
+    state.notarized_blocks.retain(v -> v >= view)
+    state.votes.retain((v, _) -> v >= view)
+    state.finalizes.retain(v -> v >= view)
+    state.voted_view.retain(v -> v >= view)
+    state.dummy_voted_view.retain(v -> v >= view)
+    state.finalized_in_view.retain(v -> v >= view)
+    state.pending_quorums.retain((v, _) -> v >= view)
+    state.pending_finalizations.retain(v -> v >= view)
+    state.known_blocks.retain((_, block) -> block.view >= view)
+```
+
+Pruning bounds the steady-state footprint of every per-view map. `pending_quorums` and `pending_finalizations` in
+particular cannot grow unboundedly: entries accumulate only for views in the unfinalized tail, and each view's
+contribution is bounded by the number of distinct block hashes that have received legitimate quorum signatures (which
+requires genuine validator signatures, not just Byzantine forgery). Once a view is finalized, all its pending entries
+are pruned.
+
+### 9.7. Message-ordering races
+
+The state machine tolerates four common out-of-order delivery patterns without buffering proposals or relying on
+timeouts:
+
+- **Voter's `finalized_view` differs from leader's.** Proposal chain validation (§9.3) accepts any chain that,
+  combined with the voter's local notarized blocks, covers every view in `[voter.finalized_view + 1, view - 1]`. The
+  voter's `finalized_view` need not match the leader's.
+- **Forwarded notarization for a future view.** The `Notarization` handler (§9.3) advances `current_view` whenever
+  `notarization.view ≥ current_view`, not only on equality. A voter that missed the proposal and votes for the
+  previous view can still advance on a forwarded notarization; the next proposal's chain supplies any intermediate
+  notarizations needed for subsequent validation.
+- **Vote quorum reached before proposal arrives.** `handle_quorum` (§9.4) records the quorum as pending if the block
+  body is unknown locally. When the block later arrives via `Propose` or `Notarization`, the pending quorum is
+  resolved immediately and the notarization completes.
+- **Finalize quorum reached before notarization arrives.** `maybe_finalize` (§9.4) records the pending finalization
+  if the view's notarization is not yet in local state. When the notarization arrives via the next proposal's chain
+  or via forwarding, `on_notarization_installed` resolves the pending finalization and emits the `FinalizeBlock`
+  action.
+- **Leader with incomplete local history.** A node that advanced into its current view via a forwarded notarization
+  from a future view (skipping intermediate views it did not observe) may lack the notarizations needed to build a
+  valid `π_chain`. In that case `enter_view` (§9.2) silently abstains from proposing; the view times out after 3Δ
+  and the network skips it via Lemma 3.6. The node still participates as a voter (dummy-voting on timeout).
 
 ## 10. Proof Impact
 
