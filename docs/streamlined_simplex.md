@@ -51,7 +51,7 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
 * `quorum()`: Returns `2f + 1`.
 * `self.id`: The local node's unique `PeerId`.
 * `SEED`: A cryptographic seed derived from genesis for the leader schedule.
-* `BASE_TIMEOUT`, `MAX_TIMEOUT`: Adaptive timeout parameters.
+* `DELTA` ($\Delta$): The assumed upper bound on network message delay.
 * `LOOKAHEAD_LIMIT = 10`: Prevents unbounded memory exhaustion from future-view spam.
 * `DUMMY_HASH`: A reserved hash representing a timeout block ($\bot$).
 * `GENESIS_HASH`: A reserved hash representing the genesis block.
@@ -63,8 +63,11 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
   `hash(SEED || view) mod n`.
 * `is_leader(state, view)`: Evaluates to a boolean. *(Relationship
   axiom: `is_leader(state, v) == (expected_leader_for(v) == self.id)`).*
-* `reset_timer(view, consecutive_dummies)`: Cancels any pending timer and schedules a new view timeout to
-  `BASE_TIMEOUT * 2^consecutive_dummies`, capped at `MAX_TIMEOUT`.
+* `reset_timer(view)`: Cancels any pending timer and schedules a new static view timeout of **$3\Delta$**.
+  *(Production Note: To prevent network churn during sustained outages, an exponential backoff logic can be injected
+  directly into the external networking/timer wrapper. Scaling the actual timeout duration dynamically outside of the
+  verified consensus state machine ensures the network behaves practically in production while allowing the Lean4 proofs
+  to rely mechanically on CP23's original static $3\Delta$ bounds).*
 * `build_block(h_parent)`: Constructs a block with the given parent height from the leader's local mempool (mempool
   semantics out of scope).
 * `verify_sig(peer_id, payload, sig)`: Returns true iff the signature is cryptographically valid AND the `peer_id` is in
@@ -81,11 +84,10 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
 * `NotarizeMsg(view, block_hash, signatures, pi_last_real)`
 
 **Local State & Bootstrap:**
-At node startup, the state is initialized as follows, and `reset_timer(1, 0)` is invoked:
+At node startup, the state is initialized as follows, and `reset_timer(1)` is invoked:
 
 * `current_view`: Integer *(Initialized to 1)*
 * `finalized_view`: Integer *(Initialized to 0)*
-* `consecutive_dummies`: Integer *(Initialized to 0)*
 * `highest_notarized_non_dummy`: Integer *(Initialized to 0)*
 * `last_real_notarization`: Tuple `(View, Hash, Signatures)` *(Initialized to `GENESIS_NOTARIZATION`, persisted across
   pruning)*
@@ -107,9 +109,9 @@ for it.
    those $f+1$ honest nodes.
 4. They evaluate $block.h_{parent} < state.highest\_notarized\_non\_dummy$. The check fails. They drop the proposal.
 5. Quorum intersection ensures the malicious bypass can never be notarized. Safety is perfectly preserved.
-   *(Invariant: Due to Byzantine equivocation, a dummy and a real notarization may coexist for the same view on
-   different node subsets, but by quorum intersection, each view has at most one REAL notarization. Only real
-   notarizations raise `highest_notarized_non_dummy`, and only real notarizations are valid as π_parent).*
+   *(Invariant: Due to the vote-once rule and quorum intersection, at most one hash—real OR dummy—can be notarized per
+   view. Only real notarizations raise `highest_notarized_non_dummy`, and only real notarizations are valid as
+   π_parent).*
 
 ### 4.2. Liveness (Partition Catch-up & Expected Degradation)
 
@@ -122,8 +124,8 @@ designated leader.
 real notarization, others hold nothing and time out), a leader drawn from the lagging subset will propose with a
 stale $\pi_{parent}$, which the network will reject. This degradation is bounded within standard CP23 partial-synchrony
 liveness guarantees: after GST, within $O(f)$ leader rotations, a leader from the real-notarization subset is elected,
-which repairs the split via its valid proposal. The simplified protocol thus inherits CP23's liveness asymptotics
-unchanged while preserving O(1) state machine linearity.
+which repairs the split via its valid proposal. Because the timeout uses a static $3\Delta$, the simplified protocol
+inherits CP23's **Lemma 3.6** liveness asymptotics verbatim while preserving O(1) state machine linearity.
 
 ## 5. Latency Analysis & Comparisons
 
@@ -158,13 +160,8 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
     // Advance view if this proves the network moved forward
     actions = []
     if view >= state.current_view:
-        if hash == DUMMY_HASH:
-            state.consecutive_dummies += 1
-        else:
-            state.consecutive_dummies = 0
-
         state.current_view = view + 1
-        reset_timer(state.current_view, state.consecutive_dummies)
+        reset_timer(state.current_view)
 
         // Natively propose upon entering the view if designated leader
         if is_leader(state, view + 1):
@@ -181,6 +178,7 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
 
 ```python
 function handle_propose(state, msg) -> Vec<Action>:
+    if msg.view <= state.finalized_view: return []
     if msg.view < state.current_view: return []
     if msg.view in state.voted_in_view: return [] // Prevent honest equivocation
     if msg.block.h_parent >= msg.view: return []  // Prevent time-traveling parents
@@ -192,7 +190,9 @@ function handle_propose(state, msg) -> Vec<Action>:
     if not verify_notarization(msg.pi_parent) or msg.pi_parent.view != msg.block.h_parent: return []
     if msg.pi_parent.hash == DUMMY_HASH: return []
 
-    // Quietly update high-water marks without triggering view advances or auto-proposals
+    // Quietly update high-water marks without triggering view advances or auto-proposals.
+    // Note: Intentional lack of view-advancement here keeps state funneled to handle_vote/handle_notarize_msg.
+    // Spurious dummy timeouts for old views may occur if the node is lagging, but are harmlessly dropped.
     install_notarization_quiet(state, msg.pi_prev.view, msg.pi_prev.hash, msg.pi_prev.sigs)
     install_notarization_quiet(state, msg.pi_parent.view, msg.pi_parent.hash, msg.pi_parent.sigs)
 
@@ -219,12 +219,14 @@ function handle_vote(state, msg) -> Vec<Action>:
     if len(state.votes[(msg.view, msg.block_hash)]) == quorum():
         actions = install_notarization(state, msg.view, msg.block_hash, state.votes[(msg.view, msg.block_hash)])
 
-        // Broadcast NotarizeMsg ONLY on exact local aggregation to prevent O(n^2) amplification
+        // Broadcast NotarizeMsg ONLY on exact local aggregation to prevent O(n^2) amplification.
+        // Reliable propagation is delegated to the P2P gossip layer.
         actions.append(Broadcast(NotarizeMsg(
             msg.view, msg.block_hash, state.votes[(msg.view, msg.block_hash)], state.last_real_notarization
         )))
 
-        if msg.block_hash != DUMMY_HASH:
+        // Broadcast Finalize if it's a real block AND we didn't dummy-vote (CP23 Lemma 3.3 constraint)
+        if msg.block_hash != DUMMY_HASH and state.voted_in_view.get(msg.view) != DUMMY_HASH:
             actions.append(Broadcast(Finalize(msg.view, msg.block_hash, sign("finalize", msg.view, msg.block_hash))))
 
         return actions
@@ -251,7 +253,7 @@ function handle_finalize(state, msg) -> Vec<Action>:
 
         // Push to app layer (resolves payloads out-of-band if missing)
         // Note: A node may finalize a view before catching up enough to install its notarization.
-        // In this edge case, last_real_notarization may temporarily lag finalized_view.
+        // In this edge case, highest_notarized_non_dummy and last_real_notarization may temporarily lag finalized_view.
         return [FinalizeBlockEvent(msg.view, msg.block_hash)]
 
     return []
@@ -308,5 +310,4 @@ function prune_state_below(state, view):
     // - state.highest_notarized_non_dummy (Monotonically increases, never pruned)
     // - state.last_real_notarization (Required for future parent pointers)
     // - state.current_view, state.finalized_view
-    // - state.consecutive_dummies
 ```
