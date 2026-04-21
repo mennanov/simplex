@@ -170,11 +170,17 @@ for kind in Types Funs; do
 done
 
 # ── Step 4: Patch remaining Aeneas bugs ────────────────────────────────────────
-# Bugs 1, 2, 3, and 5 from the original patch set were fixed upstream:
-#   - Bug 1 (PartialCmpU64 naming): AeneasVerif/aeneas#935
+# Fixed upstream (library-side defaults handle missing struct fields):
 #   - Bug 2 (PartialOrd missing fields): AeneasVerif/aeneas#940
 #   - Bug 3 (Ord missing fields): AeneasVerif/aeneas#940
+# Fixed upstream (binary now emits correct identifiers):
 #   - Bug 5 (Shared-reference PartialEq): AeneasVerif/aeneas#946
+#
+# Bug 1 — wrong instance name for scalar PartialOrd (binary vs library naming):
+#   The binary emits `core.cmp.impls.PartialCmpU64.partial_cmp` when calling
+#   u64's PartialOrd implementation inside a derived PartialOrd for a newtype.
+#   The Lean library defines it as `core.cmp.impls.PartialOrdU64.partial_cmp`.
+#   Fix merged upstream (AeneasVerif/aeneas#935) but not yet in a release binary.
 #
 # Bug 4 — wrong argument in Entry inductive constructor return types:
 #   The `Entry` inductive has parameters `(K V : Type) {A : Type}
@@ -182,17 +188,43 @@ done
 #   types pass `A` (the implicit Type) instead of `corecloneCloneInst`
 #   (the explicit Clone instance).
 #   Fix: replace `Entry K V A` with `Entry K V corecloneCloneInst`.
+#
+# Bug 6 — self-referential `lt` in derived PartialOrd struct literals:
+#   The binary emits `lt := <Self>.lt` inside PartialOrd trait impls but
+#   never generates a separate `lt` definition, creating a circular
+#   reference Lean cannot prove terminates. The library defaults from
+#   AeneasVerif/aeneas#940 provide the correct implementation.
+#   Fix: strip the self-referential `lt` lines so defaults apply.
 python3 - "$LEAN_DEST/Types.lean" "$LEAN_DEST/Funs.lean" <<'PYEOF'
-import sys
+import re, sys
 
 for path in sys.argv[1:]:
     content = open(path).read()
     original = content
 
+    # Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
+    # Remove once a release binary includes AeneasVerif/aeneas#935.
+    content = content.replace(
+        'core.cmp.impls.PartialCmpU64.partial_cmp',
+        'core.cmp.impls.PartialOrdU64.partial_cmp',
+    )
+
     # Bug 4: fix Entry constructor return types.
     content = content.replace(
         'alloc.collections.btree.map.entry.Entry K V A',
         'alloc.collections.btree.map.entry.Entry K V corecloneCloneInst',
+    )
+
+    # Bug 6: self-referential `lt` in PartialOrd struct literals.
+    # The binary emits `lt := <Namespace>.Insts.CoreCmpPartialOrd<T>.lt`
+    # but never defines a separate `lt` function, creating a circular
+    # definition that Lean cannot prove terminates. Removing the line
+    # lets the library default (from AeneasVerif/aeneas#940) apply.
+    content = re.sub(
+        r'^  lt := \S+\.Insts\.CoreCmpPartialOrd\S+\.lt$\n',
+        '',
+        content,
+        flags=re.MULTILINE,
     )
 
     if content != original:
