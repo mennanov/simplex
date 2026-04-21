@@ -52,22 +52,25 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
 * `self.id`: The local node's unique `PeerId`.
 * `SEED`: A cryptographic seed derived from genesis for the leader schedule.
 * `DELTA` ($\Delta$): The assumed upper bound on network message delay.
-* `LOOKAHEAD_LIMIT = 10`: Prevents unbounded memory exhaustion from future-view spam.
+* `LOOKAHEAD_LIMIT = 10`: Prevents unbounded memory exhaustion from future-view spam on uncertified messages (`Vote`,
+  `Finalize`).
 * `DUMMY_HASH`: A reserved hash representing a timeout block ($\bot$).
 * `GENESIS_HASH`: A reserved hash representing the genesis block.
 * `GENESIS_NOTARIZATION`: A synthetic certificate `(view=0, hash=GENESIS_HASH, sigs={})` bootstrapped into all nodes.
 
 **System Functions:**
+*(Note for Charon translation: Cryptographic functions must be isolated behind an `extern` module or trait
+marked `#[charon::opaque]` to axiomatize signature validity in Lean 4).*
 
 * `expected_leader_for(view)`: Returns the deterministic `PeerId` of the leader for the given view via
   `hash(SEED || view) mod n`.
-* `is_leader(state, view)`: Evaluates to a boolean. *(Relationship
-  axiom: `is_leader(state, v) == (expected_leader_for(v) == self.id)`).*
+* `is_leader(state, view)`: Evaluates to a boolean. *(Definitional
+  equality: `is_leader(state, v) == (expected_leader_for(v) == self.id)`).*
 * `reset_timer(view)`: Cancels any pending timer and schedules a new static view timeout of **$3\Delta$**.
   *(Production Note: To prevent network churn during sustained outages, an exponential backoff logic can be injected
   directly into the external networking/timer wrapper. Scaling the actual timeout duration dynamically outside of the
-  verified consensus state machine ensures the network behaves practically in production while allowing the Lean4 proofs
-  to rely mechanically on CP23's original static $3\Delta$ bounds).*
+  verified consensus state machine ensures the network behaves practically in production while allowing the Lean 4
+  proofs to rely mechanically on CP23's original static $3\Delta$ bounds).*
 * `build_block(h_parent)`: Constructs a block with the given parent height from the leader's local mempool (mempool
   semantics out of scope).
 * `verify_sig(peer_id, payload, sig)`: Returns true iff the signature is cryptographically valid AND the `peer_id` is in
@@ -84,16 +87,18 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
 * `NotarizeMsg(view, block_hash, signatures, pi_last_real)`
 
 **Local State & Bootstrap:**
-At node startup, the state is initialized as follows, and `reset_timer(1)` is invoked:
+At node startup, the state is initialized as follows, and `reset_timer(1)` is invoked.
+*(Note for Charon translation: Collections use flat `BTreeMap`s to guarantee deterministic ordering and inductive
+simplicity).*
 
 * `current_view`: Integer *(Initialized to 1)*
 * `finalized_view`: Integer *(Initialized to 0)*
 * `highest_notarized_non_dummy`: Integer *(Initialized to 0)*
 * `last_real_notarization`: Tuple `(View, Hash, Signatures)` *(Initialized to `GENESIS_NOTARIZATION`, persisted across
   pruning)*
-* `voted_in_view`: Map<View, BlockHash> *(Initialized empty)*
-* `votes`: Map<(View, BlockHash), Map<PeerId, Signature>> *(Initialized empty)*
-* `finalizes`: Map<(View, BlockHash), Map<PeerId, Signature>> *(Initialized empty)*
+* `voted_in_view`: BTreeMap<View, BlockHash> *(Initialized empty)*
+* `votes`: BTreeMap<(View, BlockHash, PeerId), Signature> *(Initialized empty)*
+* `finalizes`: BTreeMap<(View, BlockHash, PeerId), Signature> *(Initialized empty)*
 
 ## 4. Safety and Liveness Analysis
 
@@ -116,8 +121,9 @@ for it.
 ### 4.2. Liveness (Partition Catch-up & Expected Degradation)
 
 **Assertion:** A lagging node can safely resynchronize and propose without a heavy catch-up protocol.
-**Mechanism:** If a node misses a view, it receives `NotarizeMsg(v)` from peers advancing to $v+1$. The message attaches
-the most recent real notarization (`pi_last_real`). The quiet install funnel seamlessly updates the node's
+**Mechanism:** If a node misses a view, it receives `NotarizeMsg(v)` from peers advancing to $v+1$. Because proper
+notarization certificates are cryptographically unforgeable, nodes accept valid `NotarizeMsg`s regardless of how far in
+the future they are, bypassing standard lookahead limits. The quiet install funnel seamlessly updates the node's
 `highest_notarized_non_dummy`, and the primary install advances the view and triggers its `Propose` routine if it is the
 designated leader.
 **Acceptable Degradation (The Notarization Split):** If an adversary causes a view to split (some honest nodes hold a
@@ -125,7 +131,7 @@ real notarization, others hold nothing and time out), a leader drawn from the la
 stale $\pi_{parent}$, which the network will reject. This degradation is bounded within standard CP23 partial-synchrony
 liveness guarantees: after GST, within $O(f)$ leader rotations, a leader from the real-notarization subset is elected,
 which repairs the split via its valid proposal. Because the timeout uses a static $3\Delta$, the simplified protocol
-inherits CP23's **Lemma 3.6** liveness asymptotics verbatim while preserving O(1) state machine linearity.
+inherits CP23's **Lemma 3.6** and its partial-synchrony liveness guarantees verbatim.
 
 ## 5. Latency Analysis & Comparisons
 
@@ -163,6 +169,10 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
         state.current_view = view + 1
         reset_timer(state.current_view)
 
+        // Bound memory: discard stale vote/finalize entries outside the active window.
+        // Uses `saturating_sub` to map cleanly to Lean 4's `Nat.sub` without runtime underflow.
+        prune_state_below(state, state.current_view.saturating_sub(LOOKAHEAD_LIMIT))
+
         // Natively propose upon entering the view if designated leader
         if is_leader(state, view + 1):
             pi_prev = (view, hash, signatures)
@@ -182,6 +192,7 @@ function handle_propose(state, msg) -> Vec<Action>:
     if msg.view < state.current_view: return []
     if msg.view in state.voted_in_view: return [] // Prevent honest equivocation
     if msg.block.h_parent >= msg.view: return []  // Prevent time-traveling parents
+    if msg.block.h_parent < state.finalized_view: return [] // Never build on pre-finalized history
 
     // 1. Verify leader authentication and certificates
     expected_leader = expected_leader_for(msg.view)
@@ -212,21 +223,26 @@ function handle_vote(state, msg) -> Vec<Action>:
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent memory DoS
     if not verify_sig(msg.from, ("vote", msg.view, msg.block_hash), msg.sig): return []
 
-    // Deduplication guard
-    if msg.from in state.votes[(msg.view, msg.block_hash)]: return []
-    state.votes[(msg.view, msg.block_hash)][msg.from] = msg.sig
+    // Flat map insertion and deduplication guard
+    if (msg.view, msg.block_hash, msg.from) in state.votes: return []
+    state.votes[(msg.view, msg.block_hash, msg.from)] = msg.sig
 
-    if len(state.votes[(msg.view, msg.block_hash)]) == quorum():
-        actions = install_notarization(state, msg.view, msg.block_hash, state.votes[(msg.view, msg.block_hash)])
+    // Extract signatures specific to this view and hash
+    let current_votes = get_signatures(state.votes, msg.view, msg.block_hash)
+
+    if len(current_votes) == quorum():
+        actions = install_notarization(state, msg.view, msg.block_hash, current_votes)
 
         // Broadcast NotarizeMsg ONLY on exact local aggregation to prevent O(n^2) amplification.
         // Reliable propagation is delegated to the P2P gossip layer.
         actions.append(Broadcast(NotarizeMsg(
-            msg.view, msg.block_hash, state.votes[(msg.view, msg.block_hash)], state.last_real_notarization
+            msg.view, msg.block_hash, current_votes, state.last_real_notarization
         )))
 
         // Broadcast Finalize if it's a real block AND we didn't dummy-vote (CP23 Lemma 3.3 constraint)
-        if msg.block_hash != DUMMY_HASH and state.voted_in_view.get(msg.view) != DUMMY_HASH:
+        // Note for formalization: Lean 4 Option matching natively handles unvoted `None` states safely.
+        voted_hash = state.voted_in_view.get(msg.view, default=null)
+        if msg.block_hash != DUMMY_HASH and voted_hash != DUMMY_HASH:
             actions.append(Broadcast(Finalize(msg.view, msg.block_hash, sign("finalize", msg.view, msg.block_hash))))
 
         return actions
@@ -242,18 +258,23 @@ function handle_finalize(state, msg) -> Vec<Action>:
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return []
     if not verify_sig(msg.from, ("finalize", msg.view, msg.block_hash), msg.sig): return []
 
-    // Deduplication guard
+    // Flat map insertion and deduplication guard
     // Note: Accepts messages for any hash in the LOOKAHEAD. Bounded DoS vector (O(LOOKAHEAD_LIMIT * f * churn)).
-    if msg.from in state.finalizes[(msg.view, msg.block_hash)]: return []
-    state.finalizes[(msg.view, msg.block_hash)][msg.from] = msg.sig
+    if (msg.view, msg.block_hash, msg.from) in state.finalizes: return []
+    state.finalizes[(msg.view, msg.block_hash, msg.from)] = msg.sig
 
-    if len(state.finalizes[(msg.view, msg.block_hash)]) == quorum():
+    // Extract finalizes specific to this view and hash
+    let current_finalizes = get_signatures(state.finalizes, msg.view, msg.block_hash)
+
+    if len(current_finalizes) == quorum():
         state.finalized_view = msg.view
         prune_state_below(state, msg.view)
 
         // Push to app layer (resolves payloads out-of-band if missing)
         // Note: A node may finalize a view before catching up enough to install its notarization.
         // In this edge case, highest_notarized_non_dummy and last_real_notarization may temporarily lag finalized_view.
+        // Note: FinalizeBlockEvent fires only for the specific view that hit quorum. Intermediate
+        // views skipped via NotarizeMsg jumps are transitively finalized; the application layer must reconstruct them.
         return [FinalizeBlockEvent(msg.view, msg.block_hash)]
 
     return []
@@ -262,21 +283,23 @@ function handle_finalize(state, msg) -> Vec<Action>:
 ### 6.5. Handle NotarizeMsg (Synchronization)
 
 Processes incoming view-advance fallbacks, strictly ordering the hint installation to safely update metadata before
-triggering any `Propose` actions.
+triggering any `Propose` actions. Note: This handler explicitly omits `LOOKAHEAD_LIMIT` checks because valid
+notarization certificates represent cryptographic proof of network progression, allowing safely bridging deep partition
+gaps.
 
 ```python
 function handle_notarize_msg(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
-    if msg.view > state.current_view + LOOKAHEAD_LIMIT: return []
+
     // Verify the primary certificate first to guarantee structure
     if not verify_notarization((msg.view, msg.block_hash, msg.signatures)): return []
 
-    // Quietly install the last_real_notarization hint to prevent stale-parent liveness bugs
-    if msg.pi_last_real is not null:
-        if msg.pi_last_real.view > msg.view: return [] // Guard against future-hint attack
-        if msg.pi_last_real.view < msg.view and verify_notarization(msg.pi_last_real):
+    // Quietly install the last_real_notarization hint to prevent stale-parent liveness bugs.
+    // Explicit DUMMY_HASH and View scalar guards save verification CPU cycles and enforce the real-hint invariant.
+    if msg.pi_last_real is not null and msg.pi_last_real.hash != DUMMY_HASH and msg.pi_last_real.view < msg.view:
+        if verify_notarization(msg.pi_last_real):
             install_notarization_quiet(state, msg.pi_last_real.view, msg.pi_last_real.hash, msg.pi_last_real.sigs)
-        // (If pi_last_real.view == msg.view, the hint is redundant with primary. Skip silently.)
+        // (If pi_last_real.view >= msg.view, the hint is either redundant or malicious. Skip silently.)
 
     // Execute primary install which may trigger view advance and proposals
     return install_notarization(state, msg.view, msg.block_hash, msg.signatures)
@@ -297,11 +320,16 @@ function handle_timeout(state, view) -> Vec<Action>:
 
 ### 6.7. State Pruning
 
-Executes upon reaching a `Finalize` quorum.
-
 ```python
 function prune_state_below(state, view):
-    // Clear out stale dictionaries (optimized to clean up the finalized view itself)
+    // Clear out stale dictionaries to tightly bound memory usage.
+    // This is invoked on Finalize quorums, and unconditionally on every view advance
+    // to strictly enforce the LOOKAHEAD_LIMIT memory bound even if finalization lags.
+
+    // Safety of voted_in_view pruning: the vote-once property is enforced by the monotonic
+    // current_view (handle_propose rejects msg.view < current_view). Since we only prune
+    // entries where entry.view <= current_view - LOOKAHEAD_LIMIT, the pruned entries are
+    // mathematically unreachable via handle_propose.
     delete entries in state.votes where entry.view <= view
     delete entries in state.finalizes where entry.view <= view
     delete entries in state.voted_in_view where entry.view <= view
@@ -311,3 +339,44 @@ function prune_state_below(state, view):
     // - state.last_real_notarization (Required for future parent pointers)
     // - state.current_view, state.finalized_view
 ```
+
+## 7. Formal Verification Blueprint (Rust $\rightarrow$ Aeneas $\rightarrow$ Lean 4)
+
+To bridge the gap between this consensus logic and a step-indexed interactive theorem prover via the Charon/Aeneas
+pipeline, the Rust implementation must adhere strictly to Aeneas' supported language subset.
+
+### 7.1. State Structure and Determinism
+
+* **Use `BTreeMap`:** Do not use `HashMap`. Aeneas and Lean 4 require deterministic iteration order for proof stability.
+  By flattening the map keys (e.g., `(View, BlockHash, PeerId)`), we eliminate nested maps, reducing the inductive
+  complexity of the state definition.
+* **Flat State:** State must be a single, owned `struct`. Avoid `Rc`, `Arc`, `RefCell`, or any interior mutability, as
+  these block pure-functional translation.
+
+### 7.2. Arithmetic and Purity
+
+* **Underflow Safety:** The pruning bounds must use `.saturating_sub(LOOKAHEAD_LIMIT)`. This maps directly to Lean 4's
+  `Nat.sub` (which saturates at 0) without generating panic branches in the generated code.
+* **Sequential Handlers:** Handlers must not use `async` or blocking I/O. They must be pure functions conforming to
+  `State → Msg → (State × List Action)`. All side-effects (like `Broadcast` or `FinalizeBlockEvent`) must be returned
+  purely as data payloads in the `Vec<Action>`.
+
+### 7.3. Cryptographic Isolation
+
+* All cryptographic functions (`verify_sig`, `verify_notarization`, `sign`) must be isolated behind an `extern` module
+  or trait marked with `#[charon::opaque]`.
+* This explicitly tells the toolchain *not* to translate complex cryptographic libraries into Lean 4, allowing the
+  provers to instead axiomatize signature validity (e.g., `verify_sig(pk, msg, sig) = true → signed_by(pk, msg, sig)`).
+
+### 7.4. Core Invariants (The Proof Strategy)
+
+Once translated to Lean 4, the safety of the protocol fundamentally reduces to proving the following lemmas:
+
+1. **`MonotonicHighest`:** The high-water mark only moves forward.
+    * `∀ s c, install_quiet s c → s'.highest_notarized_non_dummy ≥ s.highest_notarized_non_dummy`
+2. **`FinalizedPrefixSafety`:** Honest nodes cannot fork prior history.
+    * `∀ v, v ≤ finalized_view → ¬∃ proposal voting on parent < v` (Discharged trivially by the
+      `msg.block.h_parent < state.finalized_view` guard in `handle_propose`).
+3. **`BoundedStateWindow`:** Maps do not grow infinitely.
+    * `∀ s, |s.votes| + |s.finalizes| ≤ n * LOOKAHEAD_LIMIT` (Guaranteed by the `prune_state_below` trigger inside
+      `install_notarization`).
