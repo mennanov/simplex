@@ -33,7 +33,7 @@ done
 #   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
 #   4. If `lake build` fails, revisit the patch section (Step 4) below.
 # <block name="charon-tag">
-CHARON_TAG="build-2026.04.15.180725-fbd54169205bf97e3c42cbfef95ca5807d697bfb"
+CHARON_TAG="build-2026.04.20.142311-8658da7bf5d67a8cac516bdf254ab1ca65233aa3"
 # </block>
 
 # The commit hash embedded in AENEAS_TAG must match the `rev` in
@@ -41,7 +41,7 @@ CHARON_TAG="build-2026.04.15.180725-fbd54169205bf97e3c42cbfef95ca5807d697bfb"
 # Also update proof/lean-toolchain to match the Lean version the new
 # Aeneas library requires (check backends/lean/lean-toolchain in the tarball).
 # <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev">
-AENEAS_TAG="build-2026.04.15.082433-8ab2e7e4e47fe73fd5b2a0c061293e00b30013fe"
+AENEAS_TAG="build-2026.04.21.215133-343f5ee4876af4b92270dbe4a0bdadabd91671e0"
 # </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -170,27 +170,11 @@ for kind in Types Funs; do
 done
 
 # ── Step 4: Patch remaining Aeneas bugs ────────────────────────────────────────
-# All four bugs are still present as of Aeneas build-2026.04.15.082433.
-#
-# Bug 1 — wrong instance name for scalar PartialOrd (binary vs library naming):
-#   The binary emits `core.cmp.impls.PartialCmpU64.partial_cmp` when calling
-#   u64's PartialOrd implementation inside a derived PartialOrd for a newtype.
-#   The Lean library defines it as `core.cmp.impls.PartialOrdU64.partial_cmp`.
-#   Fix: replace every occurrence of the wrong name with the correct one.
-#
-# Bug 2 — incomplete PartialOrd struct literals (missing lt/le/gt/ge):
-#   The Lean library's `core.cmp.PartialOrd` structure requires six fields:
-#   partialEqInst, partial_cmp, lt, le, gt, ge.  The binary only emits the
-#   first two for derived PartialOrd impls on newtypes.  The library provides
-#   default implementations for the missing four in terms of partial_cmp.
-#   Fix: for any struct literal whose last field is `partial_cmp`, append the
-#   four missing fields using their library-provided default expressions.
-#
-# Bug 3 — incomplete Ord struct literals (missing max/min/clamp):
-#   Similarly, `core.cmp.Ord` requires eqInst, partialOrdInst, cmp, max, min,
-#   clamp, but the binary only emits the first three.
-#   Fix: for any struct literal whose last two fields are `partialOrdInst` then
-#   `cmp`, append max/min/clamp via the library defaults.
+# Bugs 1, 2, 3, and 5 from the original patch set were fixed upstream:
+#   - Bug 1 (PartialCmpU64 naming): AeneasVerif/aeneas#935
+#   - Bug 2 (PartialOrd missing fields): AeneasVerif/aeneas#940
+#   - Bug 3 (Ord missing fields): AeneasVerif/aeneas#940
+#   - Bug 5 (Shared-reference PartialEq): AeneasVerif/aeneas#946
 #
 # Bug 4 — wrong argument in Entry inductive constructor return types:
 #   The `Entry` inductive has parameters `(K V : Type) {A : Type}
@@ -199,7 +183,7 @@ done
 #   (the explicit Clone instance).
 #   Fix: replace `Entry K V A` with `Entry K V corecloneCloneInst`.
 python3 - "$LEAN_DEST/Types.lean" "$LEAN_DEST/Funs.lean" <<'PYEOF'
-import re, sys
+import sys
 
 for path in sys.argv[1:]:
     content = open(path).read()
@@ -209,44 +193,6 @@ for path in sys.argv[1:]:
     content = content.replace(
         'alloc.collections.btree.map.entry.Entry K V A',
         'alloc.collections.btree.map.entry.Entry K V corecloneCloneInst',
-    )
-
-    # Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
-    content = content.replace(
-        'core.cmp.impls.PartialCmpU64.partial_cmp',
-        'core.cmp.impls.PartialOrdU64.partial_cmp',
-    )
-
-    # Bug 2: add missing lt/le/gt/ge to PartialOrd struct literals.
-    # The partial_cmp value may span one or two lines (Aeneas wraps long names).
-    content = re.sub(
-        r'^  partial_cmp :=\s*\n?\s*(\S+)$\n^}$',
-        lambda m: (
-            f'  partial_cmp := {m.group(1)}\n'
-            f'  lt := fun x y => core.cmp.PartialOrd.lt.default {m.group(1)} x y\n'
-            f'  le := fun x y => core.cmp.PartialOrd.le.default {m.group(1)} x y\n'
-            f'  gt := fun x y => core.cmp.PartialOrd.gt.default {m.group(1)} x y\n'
-            f'  ge := fun x y => core.cmp.PartialOrd.ge.default {m.group(1)} x y\n'
-            '}'
-        ),
-        content,
-        flags=re.MULTILINE,
-    )
-
-    # Bug 3: add missing max/min/clamp to Ord struct literals.
-    # The partialOrdInst value may span one or two lines.
-    content = re.sub(
-        r'^  partialOrdInst :=\s*\n?\s*(\S+)$\n^  cmp := ([^\n]+)$\n^}$',
-        lambda m: (
-            f'  partialOrdInst := {m.group(1)}\n'
-            f'  cmp := {m.group(2)}\n'
-            f'  max := core.cmp.Ord.max.default {m.group(1)}.lt\n'
-            f'  min := core.cmp.Ord.min.default {m.group(1)}.lt\n'
-            f'  clamp := core.cmp.Ord.clamp.default {m.group(1)}.le {m.group(1)}.lt {m.group(1)}.gt\n'
-            '}'
-        ),
-        content,
-        flags=re.MULTILINE,
     )
 
     if content != original:
