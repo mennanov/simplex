@@ -202,13 +202,6 @@ for path in sys.argv[1:]:
     content = open(path).read()
     original = content
 
-    # Bug 1: rename PartialCmpU64 → PartialOrdU64 throughout.
-    # Remove once a release binary includes AeneasVerif/aeneas#935.
-    content = content.replace(
-        'core.cmp.impls.PartialCmpU64.partial_cmp',
-        'core.cmp.impls.PartialOrdU64.partial_cmp',
-    )
-
     # Bug 4: fix Entry constructor return types.
     content = content.replace(
         'alloc.collections.btree.map.entry.Entry K V A',
