@@ -33,7 +33,7 @@ done
 #   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
 #   4. If `lake build` fails, revisit the patch section (Step 4) below.
 # <block name="charon-tag">
-CHARON_TAG="build-2026.04.20.142311-8658da7bf5d67a8cac516bdf254ab1ca65233aa3"
+CHARON_TAG="build-2026.04.23.144211-87fe95ead0b3dd6b9cb62827dd218f1b9bc94e70"
 # </block>
 
 # The commit hash embedded in AENEAS_TAG must match the `rev` in
@@ -41,7 +41,7 @@ CHARON_TAG="build-2026.04.20.142311-8658da7bf5d67a8cac516bdf254ab1ca65233aa3"
 # Also update proof/lean-toolchain to match the Lean version the new
 # Aeneas library requires (check backends/lean/lean-toolchain in the tarball).
 # <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev">
-AENEAS_TAG="build-2026.04.21.215133-343f5ee4876af4b92270dbe4a0bdadabd91671e0"
+AENEAS_TAG="build-2026.04.22.215158-38d10a22642d75d051e14006cc6e45055381f10e"
 # </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -170,24 +170,8 @@ for kind in Types Funs; do
 done
 
 # ── Step 4: Patch remaining Aeneas bugs ────────────────────────────────────────
-# Fixed upstream (library-side defaults handle missing struct fields):
-#   - Bug 2 (PartialOrd missing fields): AeneasVerif/aeneas#940
-#   - Bug 3 (Ord missing fields): AeneasVerif/aeneas#940
-# Fixed upstream (binary now emits correct identifiers):
-#   - Bug 5 (Shared-reference PartialEq): AeneasVerif/aeneas#946
-#
-# Bug 1 — wrong instance name for scalar PartialOrd (binary vs library naming):
-#   The binary emits `core.cmp.impls.PartialCmpU64.partial_cmp` when calling
-#   u64's PartialOrd implementation inside a derived PartialOrd for a newtype.
-#   The Lean library defines it as `core.cmp.impls.PartialOrdU64.partial_cmp`.
-#   Fix merged upstream (AeneasVerif/aeneas#935) but not yet in a release binary.
-#
-# Bug 4 — wrong argument in Entry inductive constructor return types:
-#   The `Entry` inductive has parameters `(K V : Type) {A : Type}
-#   (corecloneCloneInst : core.clone.Clone A)` but its constructor return
-#   types pass `A` (the implicit Type) instead of `corecloneCloneInst`
-#   (the explicit Clone instance).
-#   Fix: replace `Entry K V A` with `Entry K V corecloneCloneInst`.
+# All previously identified bugs (1-5) are now fixed upstream in the pinned
+# versions of Charon and Aeneas.
 #
 # Bug 6 — self-referential `lt` in derived PartialOrd struct literals:
 #   The binary emits `lt := <Self>.lt` inside PartialOrd trait impls but
@@ -201,12 +185,6 @@ import re, sys
 for path in sys.argv[1:]:
     content = open(path).read()
     original = content
-
-    # Bug 4: fix Entry constructor return types.
-    content = content.replace(
-        'alloc.collections.btree.map.entry.Entry K V A',
-        'alloc.collections.btree.map.entry.Entry K V corecloneCloneInst',
-    )
 
     # Bug 6: self-referential `lt` in PartialOrd struct literals.
     # The binary emits `lt := <Namespace>.Insts.CoreCmpPartialOrd<T>.lt`

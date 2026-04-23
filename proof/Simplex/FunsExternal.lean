@@ -125,7 +125,7 @@ axiom core.option.Option.Insts.CoreCmpPartialEqOption.eq
   {T : Type} (cmpPartialEqInst : core.cmp.PartialEq T T) :
   Option T → Option T → Result Bool
 
-/-- [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, K, V, A>[TraitClause@2]}::or_insert]:
+/-- [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, K, V, A>}::or_insert]:
     Source: '/rustc/library/alloc/src/collections/btree/map/entry.rs', lines 161:4-161:51
     Name pattern: [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, @K, @V, @A>}::or_insert]
     Visibility: public -/
@@ -134,10 +134,10 @@ axiom core.option.Option.Insts.CoreCmpPartialEqOption.eq
 axiom alloc.collections.btree.map.entry.Entry.or_insert
   {K : Type} {V : Type} {A : Type} (corecmpOrdInst : core.cmp.Ord K)
   (corecloneCloneInst : core.clone.Clone A) :
-  alloc.collections.btree.map.entry.Entry K V corecloneCloneInst → V →
-    Result (V × (V → Unit))
+  alloc.collections.btree.map.entry.Entry K V A → V → Result (V × (V →
+    Unit))
 
-/-- [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, K, V, A>[TraitClause@3]}::or_default]:
+/-- [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, K, V, A>}::or_default]:
     Source: '/rustc/library/alloc/src/collections/btree/map/entry.rs', lines 314:4-314:40
     Name pattern: [alloc::collections::btree::map::entry::{alloc::collections::btree::map::entry::Entry<'a, @K, @V, @A>}::or_default]
     Visibility: public -/
@@ -147,10 +147,9 @@ axiom alloc.collections.btree.map.entry.Entry.or_default
   {K : Type} {V : Type} {A : Type} (corecmpOrdInst : core.cmp.Ord K)
   (coredefaultDefaultInst : core.default.Default V) (corecloneCloneInst :
   core.clone.Clone A) :
-  alloc.collections.btree.map.entry.Entry K V corecloneCloneInst → Result (V
-    × (V → Unit))
+  alloc.collections.btree.map.entry.Entry K V A → Result (V × (V → Unit))
 
-/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, alloc::alloc::Global>[alloc::alloc::{core::clone::Clone for alloc::alloc::Global}]}::new]:
+/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, alloc::alloc::Global>}::new]:
     Source: '/rustc/library/alloc/src/collections/btree/map.rs', lines 651:4-651:40
     Name pattern: [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<@K, @V, alloc::alloc::Global>}::new]
     Visibility: public -/
@@ -158,9 +157,9 @@ axiom alloc.collections.btree.map.entry.Entry.or_default
   "alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<@K, @V, alloc::alloc::Global>}::new"]
 axiom alloc.collections.btree.map.BTreeMapKVGlobal.new
   (K : Type) (V : Type) :
-  Result (alloc.collections.btree.map.BTreeMap K V core.core.clone.CloneGlobal)
+  Result (alloc.collections.btree.map.BTreeMap K V Global)
 
-/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, A>[TraitClause@1]}::entry]:
+/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, A>}::entry]:
     Source: '/rustc/library/alloc/src/collections/btree/map.rs', lines 1343:4-1345:15
     Name pattern: [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<@K, @V, @A>}::entry]
     Visibility: public -/
@@ -169,11 +168,11 @@ axiom alloc.collections.btree.map.BTreeMapKVGlobal.new
 axiom alloc.collections.btree.map.BTreeMap.entry
   {K : Type} {V : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A)
   (corecmpOrdInst : core.cmp.Ord K) :
-  alloc.collections.btree.map.BTreeMap K V corecloneCloneInst → K → Result
-    ((alloc.collections.btree.map.entry.Entry K V corecloneCloneInst) ×
-    (alloc.collections.btree.map.BTreeMap K V corecloneCloneInst))
+  alloc.collections.btree.map.BTreeMap K V A → K → Result
+    ((alloc.collections.btree.map.entry.Entry K V A) ×
+    (alloc.collections.btree.map.BTreeMap K V A))
 
-/-- [alloc::collections::btree::map::{core::default::Default for alloc::collections::btree::map::BTreeMap<K, V, alloc::alloc::Global>[alloc::alloc::{core::clone::Clone for alloc::alloc::Global}]}::default]:
+/-- [alloc::collections::btree::map::{core::default::Default for alloc::collections::btree::map::BTreeMap<K, V, alloc::alloc::Global>}::default]:
     Source: '/rustc/library/alloc/src/collections/btree/map.rs', lines 2439:4-2439:34
     Name pattern: [alloc::collections::btree::map::{core::default::Default<alloc::collections::btree::map::BTreeMap<@K, @V, alloc::alloc::Global>>}::default]
     Visibility: public -/
@@ -182,9 +181,9 @@ axiom alloc.collections.btree.map.BTreeMap.entry
 axiom
   alloc.collections.btree.map.BTreeMapKVGlobal.Insts.CoreDefaultDefault.default
   (K : Type) (V : Type) :
-  Result (alloc.collections.btree.map.BTreeMap K V core.core.clone.CloneGlobal)
+  Result (alloc.collections.btree.map.BTreeMap K V Global)
 
-/-- [alloc::collections::btree::map::{core::ops::index::Index<&0 (Q), V> for alloc::collections::btree::map::BTreeMap<K, V, A>[TraitClause@1]}::index]:
+/-- [alloc::collections::btree::map::{core::ops::index::Index<&0 (Q), V> for alloc::collections::btree::map::BTreeMap<K, V, A>}::index]:
     Source: '/rustc/library/alloc/src/collections/btree/map.rs', lines 2491:4-2491:34
     Name pattern: [alloc::collections::btree::map::{core::ops::index::Index<alloc::collections::btree::map::BTreeMap<@K, @V, @A>, &'0 @Q, @V>}::index]
     Visibility: public -/
@@ -195,10 +194,9 @@ axiom
   {K : Type} {Q : Type} {V : Type} {A : Type} (corecloneCloneInst :
   core.clone.Clone A) (coreborrowBorrowInst : core.borrow.Borrow K Q)
   (corecmpOrdInst : core.cmp.Ord K) (corecmpOrdInst1 : core.cmp.Ord Q) :
-  alloc.collections.btree.map.BTreeMap K V corecloneCloneInst → Q → Result
-    V
+  alloc.collections.btree.map.BTreeMap K V A → Q → Result V
 
-/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, A>[TraitClause@1]}::len]:
+/-- [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<K, V, A>}::len]:
     Source: '/rustc/library/alloc/src/collections/btree/map.rs', lines 2665:4-2665:36
     Name pattern: [alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<@K, @V, @A>}::len]
     Visibility: public -/
@@ -206,20 +204,18 @@ axiom
   "alloc::collections::btree::map::{alloc::collections::btree::map::BTreeMap<@K, @V, @A>}::len"]
 axiom alloc.collections.btree.map.BTreeMap.len
   {K : Type} {V : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
-  alloc.collections.btree.map.BTreeMap K V corecloneCloneInst → Result
-    Std.Usize
+  alloc.collections.btree.map.BTreeMap K V A → Result Std.Usize
 
-/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, alloc::alloc::Global>[alloc::alloc::{core::clone::Clone for alloc::alloc::Global}]}::new]:
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, alloc::alloc::Global>}::new]:
     Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 344:4-344:37
     Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, alloc::alloc::Global>}::new]
     Visibility: public -/
 @[rust_fun
   "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, alloc::alloc::Global>}::new"]
 axiom alloc.collections.btree.set.BTreeSetTGlobal.new
-  (T : Type) :
-  Result (alloc.collections.btree.set.BTreeSet T core.core.clone.CloneGlobal)
+  (T : Type) : Result (alloc.collections.btree.set.BTreeSet T Global)
 
-/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::insert]:
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>}::insert]:
     Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 898:4-900:15
     Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::insert]
     Visibility: public -/
@@ -228,10 +224,10 @@ axiom alloc.collections.btree.set.BTreeSetTGlobal.new
 axiom alloc.collections.btree.set.BTreeSet.insert
   {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A)
   (corecmpOrdInst : core.cmp.Ord T) :
-  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → T → Result
-    (Bool × (alloc.collections.btree.set.BTreeSet T corecloneCloneInst))
+  alloc.collections.btree.set.BTreeSet T A → T → Result (Bool ×
+    (alloc.collections.btree.set.BTreeSet T A))
 
-/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::iter]:
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>}::iter]:
     Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1243:4-1243:37
     Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::iter]
     Visibility: public -/
@@ -239,10 +235,10 @@ axiom alloc.collections.btree.set.BTreeSet.insert
   "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::iter"]
 axiom alloc.collections.btree.set.BTreeSet.iter
   {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
-  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → Result
+  alloc.collections.btree.set.BTreeSet T A → Result
     (alloc.collections.btree.set.Iter T)
 
-/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>[TraitClause@1]}::is_empty]:
+/-- [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<T, A>}::is_empty]:
     Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1290:4-1290:40
     Name pattern: [alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::is_empty]
     Visibility: public -/
@@ -250,7 +246,7 @@ axiom alloc.collections.btree.set.BTreeSet.iter
   "alloc::collections::btree::set::{alloc::collections::btree::set::BTreeSet<@T, @A>}::is_empty"]
 axiom alloc.collections.btree.set.BTreeSet.is_empty
   {T : Type} {A : Type} (corecloneCloneInst : core.clone.Clone A) :
-  alloc.collections.btree.set.BTreeSet T corecloneCloneInst → Result Bool
+  alloc.collections.btree.set.BTreeSet T A → Result Bool
 
 /-- [alloc::collections::btree::set::{core::iter::traits::iterator::Iterator<&'a (T)> for alloc::collections::btree::set::Iter<'a, T>}::next]:
     Source: '/rustc/library/alloc/src/collections/btree/set.rs', lines 1761:4-1761:39
@@ -283,31 +279,31 @@ axiom consensus.Event.Insts.CoreCmpPartialEqEvent.ne
   : consensus.Event → consensus.Event → Result Bool
 
 /-- [simplex::types::{core::cmp::PartialEq<simplex::types::TimerId> for simplex::types::TimerId}::ne]:
-    Source: 'src/types.rs', lines 51:29-51:38
+    Source: 'src/types.rs', lines 105:29-105:38
     Visibility: public -/
 axiom types.TimerId.Insts.CoreCmpPartialEqTimerId.ne
   : types.TimerId → types.TimerId → Result Bool
 
 /-- [simplex::message::{core::cmp::PartialEq<simplex::message::Message> for simplex::message::Message}::ne]:
-    Source: 'src/message.rs', lines 23:23-23:32
+    Source: 'src/message.rs', lines 73:23-73:32
     Visibility: public -/
 axiom message.Message.Insts.CoreCmpPartialEqMessage.ne
   : message.Message → message.Message → Result Bool
 
 /-- [simplex::message::{core::cmp::PartialEq<simplex::message::Finalize> for simplex::message::Finalize}::ne]:
-    Source: 'src/message.rs', lines 17:23-17:32
+    Source: 'src/message.rs', lines 53:23-53:32
     Visibility: public -/
 axiom message.Finalize.Insts.CoreCmpPartialEqFinalize.ne
   : message.Finalize → message.Finalize → Result Bool
 
 /-- [simplex::message::{core::cmp::PartialEq<simplex::message::Vote> for simplex::message::Vote}::ne]:
-    Source: 'src/message.rs', lines 9:23-9:32
+    Source: 'src/message.rs', lines 23:23-23:32
     Visibility: public -/
 axiom message.Vote.Insts.CoreCmpPartialEqVote.ne
   : message.Vote → message.Vote → Result Bool
 
 /-- [simplex::types::{core::cmp::PartialEq<simplex::types::BlockHash> for simplex::types::BlockHash}::ne]:
-    Source: 'src/types.rs', lines 20:29-20:38
+    Source: 'src/types.rs', lines 38:29-38:38
     Visibility: public -/
 axiom types.BlockHash.Insts.CoreCmpPartialEqBlockHash.ne
   : types.BlockHash → types.BlockHash → Result Bool
@@ -319,7 +315,7 @@ axiom message.Proposal.Insts.CoreCmpPartialEqProposal.ne
   : message.Proposal → message.Proposal → Result Bool
 
 /-- [simplex::types::{core::cmp::PartialEq<simplex::types::TransactionHash> for simplex::types::TransactionHash}::ne]:
-    Source: 'src/types.rs', lines 23:29-23:38
+    Source: 'src/types.rs', lines 51:29-51:38
     Visibility: public -/
 axiom types.TransactionHash.Insts.CoreCmpPartialEqTransactionHash.ne
   : types.TransactionHash → types.TransactionHash → Result Bool
@@ -331,7 +327,7 @@ axiom consensus.Action.Insts.CoreCmpPartialEqAction.ne
   : consensus.Action → consensus.Action → Result Bool
 
 /-- [simplex::types::{core::cmp::PartialEq<simplex::types::Block> for simplex::types::Block}::ne]:
-    Source: 'src/types.rs', lines 27:23-27:32
+    Source: 'src/types.rs', lines 65:23-65:32
     Visibility: public -/
 axiom types.Block.Insts.CoreCmpPartialEqBlock.ne
   : types.Block → types.Block → Result Bool
@@ -343,7 +339,7 @@ axiom types.PeerId.Insts.CoreCmpPartialEqPeerId.ne
   : types.PeerId → types.PeerId → Result Bool
 
 /-- [simplex::types::{core::cmp::PartialEq<simplex::types::View> for simplex::types::View}::ne]:
-    Source: 'src/types.rs', lines 6:29-6:38
+    Source: 'src/types.rs', lines 16:29-16:38
     Visibility: public -/
 axiom types.View.Insts.CoreCmpPartialEqView.ne
   : types.View → types.View → Result Bool
