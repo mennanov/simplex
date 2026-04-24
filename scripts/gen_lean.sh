@@ -22,26 +22,37 @@ done
 # We pin specific release tags so that `make lean` and `lake build` are
 # reproducible and do not break silently when a new nightly drops.
 #
-# IMPORTANT: these two tags must be kept in sync with the Aeneas library revision
-# pinned in proof/lakefile.toml (`[[require]] rev = "..."`).  The commit hash
-# embedded in AENEAS_TAG must match that rev exactly, because the binary and the
-# Lean library it ships with must come from the same build.
+# IMPORTANT: three values must stay in lockstep when upgrading Aeneas:
+#   • AENEAS_TAG here  (commit hash suffix = Aeneas release commit)
+#   • `rev` in proof/lakefile.toml  (must equal that commit hash)
+#   • LEAN_TOOLCHAIN here  (must match proof/lean-toolchain, which must match
+#     backends/lean/lean-toolchain in the Aeneas release tarball)
+# Blockwatch cross-links all three; the preflight below additionally asserts
+# that LEAN_TOOLCHAIN == contents of proof/lean-toolchain.
 #
 # To upgrade:
 #   1. Update CHARON_TAG and AENEAS_TAG to the new release tags.
 #   2. Update the `rev` in proof/lakefile.toml to the commit hash in AENEAS_TAG.
-#   3. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
-#   4. If `lake build` fails, revisit the patch section (Step 4) below.
-# <block name="charon-tag">
+#   3. Update LEAN_TOOLCHAIN below AND proof/lean-toolchain to match
+#      backends/lean/lean-toolchain in the Aeneas release tarball.
+#   4. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
+#   5. If `lake build` fails, revisit the patch section (Step 4) below.
+# <block name="charon-tag" line-pattern='^CHARON_TAG="build-\d{4}\.\d{2}\.\d{2}\.\d{6}-[0-9a-f]{40}"$'>
 CHARON_TAG="build-2026.04.23.144211-87fe95ead0b3dd6b9cb62827dd218f1b9bc94e70"
 # </block>
 
 # The commit hash embedded in AENEAS_TAG must match the `rev` in
-# proof/lakefile.toml — blockwatch enforces that both are updated together.
-# Also update proof/lean-toolchain to match the Lean version the new
-# Aeneas library requires (check backends/lean/lean-toolchain in the tarball).
-# <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev">
+# proof/lakefile.toml, and LEAN_TOOLCHAIN must match proof/lean-toolchain —
+# blockwatch enforces that all three are updated together.
+# <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev, :lean-toolchain, :aeneas-patches" line-pattern='^AENEAS_TAG="build-\d{4}\.\d{2}\.\d{2}\.\d{6}-[0-9a-f]{40}"$'>
 AENEAS_TAG="build-2026.04.22.215158-38d10a22642d75d051e14006cc6e45055381f10e"
+# </block>
+
+# Mirror of proof/lean-toolchain.  The preflight check below asserts they match
+# exactly; the blockwatch link to aeneas-tag forces both to be reviewed together
+# on every Aeneas upgrade (aeneas-tag → lean-toolchain and the reverse).
+# <block name="lean-toolchain" affects=":aeneas-tag" line-pattern='^LEAN_TOOLCHAIN="leanprover/lean4:[^"]+"$'>
+LEAN_TOOLCHAIN="leanprover/lean4:v4.28.0-rc1"
 # </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -119,6 +130,18 @@ if ! command -v aeneas &>/dev/null; then
   exit 1
 fi
 
+# Assert proof/lean-toolchain matches LEAN_TOOLCHAIN above.  Blockwatch forces
+# both to appear in the same diff on an Aeneas bump, but cannot check equality
+# across files — that's what this does.
+read -r _actual_toolchain < "$PROJECT_ROOT/proof/lean-toolchain"
+if [ "$_actual_toolchain" != "$LEAN_TOOLCHAIN" ]; then
+  echo "Error: proof/lean-toolchain ($_actual_toolchain) does not match" >&2
+  echo "       LEAN_TOOLCHAIN in scripts/gen_lean.sh ($LEAN_TOOLCHAIN)." >&2
+  echo "       Update one so they agree." >&2
+  exit 1
+fi
+unset _actual_toolchain
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 LLBC_DIR="$PROJECT_ROOT/target/charon"
 AENEAS_OUT="$PROJECT_ROOT/target/aeneas-out"
@@ -173,6 +196,11 @@ done
 # All previously identified bugs (1-5) are now fixed upstream in the pinned
 # versions of Charon and Aeneas.
 #
+# The block below is blockwatch-linked to aeneas-tag: every Aeneas bump forces
+# a diff here so the patch list gets reviewed (remove patches for bugs fixed
+# upstream; add patches for new bugs encountered).  If the list is unchanged
+# across a bump, make a no-op whitespace touch to acknowledge the review.
+# <block name="aeneas-patches" affects=":aeneas-tag">
 # Bug 6 — self-referential `lt` in derived PartialOrd struct literals:
 #   The binary emits `lt := <Self>.lt` inside PartialOrd trait impls but
 #   never generates a separate `lt` definition, creating a circular
@@ -201,5 +229,6 @@ for path in sys.argv[1:]:
     if content != original:
         open(path, 'w').write(content)
 PYEOF
+# </block>
 
 echo "==> Done. Generated: $LEAN_DEST/{Types,Funs}.lean"
