@@ -15,8 +15,8 @@ impl Proposal {
         &self.block
     }
 
-    pub fn from(&self) -> PeerId {
-        self.from
+    pub fn from(&self) -> &PeerId {
+        &self.from
     }
 }
 
@@ -45,8 +45,8 @@ impl Vote {
         self.block_hash
     }
 
-    pub fn from(&self) -> PeerId {
-        self.from
+    pub fn from(&self) -> &PeerId {
+        &self.from
     }
 }
 

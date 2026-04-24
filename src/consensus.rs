@@ -1,4 +1,4 @@
-use crate::message::{Finalize, Message, Proposal, Vote};
+use crate::message::{Message, Proposal, Vote};
 use crate::types::{Block, BlockHash, PeerId, TimerId, TransactionHash, View};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -11,7 +11,7 @@ pub enum Event {
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
-    SendSigned { message: Message, to: PeerId },
+    Send { message: Message, to: PeerId },
     FinalizeBlock(Block),
     SetTimer(TimerId),
     CancelTimer(TimerId),
@@ -31,9 +31,9 @@ pub struct Consensus<L: LeaderElector> {
     has_voted_dummy: bool,
     // BTreeMap(s) are used because they support efficient pruning of old views in O(log n)
     // via `split_off(view)` and are better optimized for storing sequential integer keys.
-    notarizations: BTreeMap<View, BTreeMap<PeerId, Vote>>,
+    notarize_votes: BTreeMap<View, BTreeMap<PeerId, Vote>>,
     dummy_votes: BTreeMap<View, BTreeMap<PeerId, Vote>>,
-    finalizes: BTreeMap<View, Vec<Finalize>>,
+    finalize_votes: BTreeMap<View, BTreeMap<PeerId, Vote>>,
     // Pending transactions to be proposed by this node when it becomes a leader.
     pending_transactions: BTreeSet<TransactionHash>,
 }
@@ -46,9 +46,9 @@ impl<L: LeaderElector> Consensus<L> {
             peers,
             view: View::new(1),
             has_voted_dummy: false,
-            notarizations: BTreeMap::new(),
+            notarize_votes: BTreeMap::new(),
             dummy_votes: BTreeMap::new(),
-            finalizes: BTreeMap::new(),
+            finalize_votes: BTreeMap::new(),
             pending_transactions: BTreeSet::new(),
         }
     }
@@ -58,6 +58,13 @@ impl<L: LeaderElector> Consensus<L> {
         match event {
             Event::MessageReceived(msg) => {
                 match msg {
+                    Message::Propose(proposal) => {
+                        if !self.is_proposal_valid(&proposal) {
+                            // The proposal did not pass trivial validity checks.
+                            return Vec::new();
+                        }
+                        Vec::new()
+                    }
                     Message::Vote(vote) => {
                         if vote.block_hash().is_none() {
                             // Vote for a dummy block.
@@ -65,7 +72,7 @@ impl<L: LeaderElector> Consensus<L> {
                             self.dummy_votes
                                 .entry(vote.view())
                                 .or_default()
-                                .entry(vote.from())
+                                .entry(*vote.from())
                                 .or_insert(vote);
                             if self.has_byzantine_quorum(self.dummy_votes[&view].len()) {
                                 self.start_next_view()
@@ -81,7 +88,6 @@ impl<L: LeaderElector> Consensus<L> {
                         // TODO
                         Vec::new()
                     }
-                    _ => Vec::new(),
                 }
             }
             Event::TimerExpired(timer_id) => {
@@ -117,7 +123,7 @@ impl<L: LeaderElector> Consensus<L> {
             let mut actions = Vec::new();
             for peer_id in self.peers.iter() {
                 if *peer_id != self.peer_id {
-                    actions.push(Action::SendSigned {
+                    actions.push(Action::Send {
                         message: Message::Propose(Proposal::new(
                             Block::new(
                                 self.view,
@@ -143,13 +149,48 @@ impl<L: LeaderElector> Consensus<L> {
         let mut actions = Vec::new();
         for peer_id in self.peers.iter() {
             if *peer_id != self.peer_id {
-                actions.push(Action::SendSigned {
+                actions.push(Action::Send {
                     message: Message::Vote(Vote::new(self.view, None, self.peer_id)),
                     to: *peer_id,
                 });
             }
         }
         actions
+    }
+
+    #[allow(dead_code)]
+    /// Broadcasts a vote for a valid proposal block.
+    fn broadcast_support_vote(&mut self, proposal: &Proposal) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for peer_id in self.peers.iter() {
+            if *peer_id != self.peer_id {
+                actions.push(Action::Send {
+                    message: Message::Vote(Vote::new(
+                        self.view,
+                        Some(proposal.block().block_hash()),
+                        self.peer_id,
+                    )),
+                    to: *peer_id,
+                });
+            }
+        }
+        actions
+    }
+
+    /// Whether the given proposal passes trivial validity checks.
+    fn is_proposal_valid(&self, proposal: &Proposal) -> bool {
+        proposal.block().parent_view() < proposal.block().view()
+            && self
+                .leader_elector
+                .leader(proposal.block().view(), &self.peers)
+                == proposal.from()
+    }
+
+    #[allow(dead_code)]
+    /// Whether the given proposal is ready to be notarized.
+    fn can_notarize_proposal(&self, _proposal: &Proposal) -> bool {
+        // TODO
+        true
     }
 
     /// Resets a view-related state.
@@ -288,9 +329,9 @@ mod tests {
             assert!(
                 actions.iter().any(|action| matches!(
                     action,
-                    Action::SendSigned { message: Message::Propose(proposal), to }
+                    Action::Send { message: Message::Propose(proposal), to }
                         if *to == peer
-                            && proposal.from() == peer2
+                            && proposal.from() == &peer2
                             && proposal.block().transactions().contains(&transaction)
                 )),
                 "expected proposal to be sent to {peer:?}"
@@ -320,8 +361,8 @@ mod tests {
             if v == 2 {
                 // In View 3, peer3 is the leader and should broadcast the proposal to others.
                 for peer in [peer0, peer1, peer2] {
-                    assert!(actions.iter().any(|a| matches!(a, Action::SendSigned { to, message: Message::Propose(p) }
-                        if *to == peer && p.from() == peer3 && p.block().transactions().contains(&transaction))));
+                    assert!(actions.iter().any(|a| matches!(a, Action::Send { to, message: Message::Propose(p) }
+                        if *to == peer && p.from() == &peer3 && p.block().transactions().contains(&transaction))));
                 }
             }
         }
@@ -339,9 +380,9 @@ mod tests {
             assert!(
                 actions.iter().any(|action| matches!(
                     action,
-                    Action::SendSigned { message: Message::Vote(vote), to }
+                    Action::Send { message: Message::Vote(vote), to }
                         if *to == peer
-                            && vote.from() == peer0
+                            && vote.from() == &peer0
                             && vote.view() == View::new(1)
                             && vote.block_hash().is_none()
                 )),
