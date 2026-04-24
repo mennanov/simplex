@@ -23,6 +23,7 @@ data replication.
 
 In CP23, a leader must attach an unbroken chain of dummy notarizations to prove that no real block was bypassed
 between $h_{parent}$ and the current view.
+
 **The Simplification:** The leader attaches **no chain**. A proposal only includes two constant-height certificates:
 
 1. $\pi_{prev}$: The notarization for $view - 1$ (proving the network legally entered this view).
@@ -105,6 +106,7 @@ simplicity).*
 ### 4.1. Safety (No Bypassing)
 
 **Assertion:** A malicious leader cannot cause the network to finalize a fork by bypassing a validly notarized block.
+
 **Proof:** 1. Assume a real block $b$ was successfully notarized at view $v$. This requires $2f+1$ nodes to have voted
 for it.
 
@@ -121,11 +123,13 @@ for it.
 ### 4.2. Liveness (Partition Catch-up & Expected Degradation)
 
 **Assertion:** A lagging node can safely resynchronize and propose without a heavy catch-up protocol.
+
 **Mechanism:** If a node misses a view, it receives `NotarizeMsg(v)` from peers advancing to $v+1$. Because proper
 notarization certificates are cryptographically unforgeable, nodes accept valid `NotarizeMsg`s regardless of how far in
 the future they are, bypassing standard lookahead limits. The quiet install funnel seamlessly updates the node's
 `highest_notarized_non_dummy`, and the primary install advances the view and triggers its `Propose` routine if it is the
 designated leader.
+
 **Acceptable Degradation (The Notarization Split):** If an adversary causes a view to split (some honest nodes hold a
 real notarization, others hold nothing and time out), a leader drawn from the lagging subset will propose with a
 stale $\pi_{parent}$, which the network will reject. This degradation is bounded within standard CP23 partial-synchrony
@@ -148,7 +152,7 @@ inherits CP23's **Lemma 3.6** and its partial-synchrony liveness guarantees verb
 The funnels for metadata high-water marks, view advancement, and leader proposal generation. Note: State transitions are
 strictly sequential; `handle_*` functions execute atomically.
 
-```python
+```
 function install_notarization_quiet(state, view, hash, signatures):
     """Updates metadata safely without triggering view advance or proposals."""
     if view <= state.finalized_view: return
@@ -186,7 +190,7 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
 
 ### 6.2. Handle Propose
 
-```python
+```
 function handle_propose(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
     if msg.view < state.current_view: return []
@@ -217,7 +221,7 @@ function handle_propose(state, msg) -> Vec<Action>:
 
 ### 6.3. Handle Vote
 
-```python
+```
 function handle_vote(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent memory DoS
@@ -251,7 +255,7 @@ function handle_vote(state, msg) -> Vec<Action>:
 
 ### 6.4. Handle Finalize
 
-```python
+```
 function handle_finalize(state, msg) -> Vec<Action>:
     if msg.block_hash == DUMMY_HASH: return [] // Dummy blocks cannot be finalized
     if msg.view <= state.finalized_view: return []
@@ -287,7 +291,7 @@ triggering any `Propose` actions. Note: This handler explicitly omits `LOOKAHEAD
 notarization certificates represent cryptographic proof of network progression, allowing safely bridging deep partition
 gaps.
 
-```python
+```
 function handle_notarize_msg(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
 
@@ -309,7 +313,7 @@ function handle_notarize_msg(state, msg) -> Vec<Action>:
 
 Generates dummy votes to drive view advancement upon network failure.
 
-```python
+```
 function handle_timeout(state, view) -> Vec<Action>:
     if view != state.current_view: return []
     if view in state.voted_in_view: return []
@@ -320,7 +324,7 @@ function handle_timeout(state, view) -> Vec<Action>:
 
 ### 6.7. State Pruning
 
-```python
+```
 function prune_state_below(state, view):
     // Clear out stale dictionaries to tightly bound memory usage.
     // This is invoked on Finalize quorums, and unconditionally on every view advance
