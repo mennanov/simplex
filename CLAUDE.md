@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A `no_std` Rust implementation of the Simplex BFT consensus protocol with formal verification via Lean 4. The pipeline automatically translates the Rust state machine to Lean 4 using Charon + Aeneas for mathematical proof generation.
+A `no_std` Rust implementation of the **pragmatically-simplified Simplex BFT consensus protocol** (based on Chan & Pass, CP23), with formal verification via Lean 4. The Rust state machine is automatically translated to Lean 4 through Charon + Aeneas for mathematical proof generation.
+
+The **authoritative algorithm spec** is `docs/streamlined_simplex.md` — read it before making semantic changes. Key simplifications over vanilla CP23:
+
+- **Local Highest Rule**: proposals carry only two constant-size certificates (`π_prev` for `view-1`, `π_parent` for `h_parent`). No chain forwarding. Voters reject proposals whose `h_parent < highest_notarized_non_dummy`; safety via quorum intersection.
+- **O(1) `NotarizeMsg`** for view-advance / catch-up — one cert + an optional `pi_last_real` hint.
+- **Static `3Δ` timeout** everywhere, preserving CP23's Lemma 3.6 liveness bounds verbatim.
+- **Dummy vote encoding**: `Vote.block_hash = None` represents ⊥ (timeout); a quorum of these advances the view.
 
 ## Commands
 
@@ -14,50 +21,74 @@ cargo build
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
+cargo test <test_name>         # single test
 ```
 
-To run a single test:
+### Lean proof generation
 ```bash
-cargo test <test_name>
+make lean                      # charon + aeneas must be on PATH
+make lean-bootstrap            # auto-installs pinned charon + aeneas
+cd proof && lake exe cache get # mathlib cache (first build)
+cd proof && lake build
 ```
 
-### Lean Proof Generation
+### Version invariants
 ```bash
-make lean                    # Generate Lean from Rust (charon + aeneas must be on PATH)
-make lean-bootstrap          # Auto-install Charon + Aeneas, then generate
-cd proof && lake exe cache get  # Download mathlib cache (run before first build)
-cd proof && lake build       # Build the Lean proof project
+scripts/check_versions.sh      # Aeneas-hash ↔ lakefile-rev, LEAN_TOOLCHAIN ↔ lean-toolchain
 ```
+Runs as a pre-commit hook and from the `gen_lean.sh` preflight.
 
 ## Architecture
 
-### Rust State Machine (`src/`)
+### Rust state machine (`src/`)
 
-The consensus logic is a pure state machine with no I/O:
+Pure, I/O-free. Single owned state; no `Rc`/`Arc`/`RefCell`.
 
-- **`types.rs`**: Core types — `PeerId` (32-byte validator ID), `View` (round number, `u64`), `Block`, `BlockHash`, `TimerId`
-- **`message.rs`**: Protocol messages — `Proposal` (leader proposes block), `Vote` (real block or dummy/timeout via `Option<BlockHash>`), `Finalize`, and `Message` enum
-- **`consensus.rs`**: `Consensus` struct with `handle_event(Event) -> Vec<Action>`. Events are `MessageReceived` or `TimerExpired`; Actions are `Broadcast`, `FinalizeBlock`, `SetTimer`, `CancelTimer`
+- **`types.rs`** — `PeerId` (32-byte), `View` (`u64`), `Block`, `BlockHash`, `TransactionHash`, `TimerId`.
+- **`message.rs`** — `Proposal`, `Vote` (with `block_hash: Option<BlockHash>` for ⊥), `Finalize`, and `Message` enum. `NotarizeMsg` is part of the approved spec but not yet implemented.
+- **`consensus.rs`** — `Consensus<L: LeaderElector>::handle_event(Event) -> Vec<Action>`. Events: `MessageReceived`, `TimerExpired`. Actions: `Broadcast`, `FinalizeBlock`, `SetTimer`, `CancelTimer`. `RoundRobinLeaderElector` is the default elector.
 
-The crate is `#![no_std]` with `extern crate alloc`. `BTreeMap` is used instead of `HashMap` for deterministic, sorted storage — this is required for formal verification. Hashbrown is used for cases where `no_std` HashMap is needed, though it currently has a known Aeneas translation limitation (closures not supported).
+The crate is `#![no_std]` with `extern crate alloc`. **Use `BTreeMap` over `HashMap`** — deterministic iteration is required for proof stability, and flat keys (e.g. `(View, BlockHash, PeerId)`) are preferred over nested maps. `hashbrown` is used where `no_std` `HashMap` is needed, but has a known Aeneas limitation (closures in iterator chains don't translate).
 
-### Lean Proof Pipeline (`proof/`, `scripts/gen_lean.sh`)
+### Lean proof pipeline (`proof/`, `scripts/gen_lean.sh`)
 
 ```
-Rust source → charon (→ .llbc LLBC IR) → aeneas (→ Lean 4) → proof/Proof/Consensus.lean
+src/*.rs → charon → target/charon/simplex.llbc → aeneas → proof/Simplex/{Types,Funs}.lean
 ```
 
-`proof/Proof/Consensus.lean` is auto-generated and not checked into git. The script applies Python regex patches to work around known Aeneas bugs (naming mismatches in `PartialOrd`/`Ord` struct fields).
+Files under `proof/Simplex/`:
+- `Types.lean`, `Funs.lean` — **auto-generated**, overwritten every run. Commit them alongside the Rust change.
+- `TypesExternal.lean`, `FunsExternal.lean` — **hand-maintained** (seeded once from templates in `target/aeneas-out/`). Fill new opaque-function holes here.
 
-Tool versions are pinned in `scripts/gen_lean.sh` (`CHARON_TAG`, `AENEAS_TAG`) and must stay in sync with the `aeneas` git dependency commit in `proof/lakefile.toml` — enforced by the `blockwatch` CI job.
+`gen_lean.sh` applies regex patches for residual Aeneas bugs (see the `aeneas-patches` block; prune on each Aeneas bump).
 
-### Protocol Notes
+### Version coupling and enforcement
 
-`Vote.block_hash = None` represents a vote for the dummy block ⊥ (timeout). A quorum of these (`> 2n/3`) triggers moving to the next view. The `docs/simplex_improvements.md` document specifies practical wire protocol optimizations over the original CP23 paper (e.g., using `parent_view` instead of full chain hashes to reduce O(h) message sizes).
+Four values move in lockstep on an Aeneas upgrade:
 
-## Implementation Status
+1. `AENEAS_TAG` in `scripts/gen_lean.sh` (40-hex suffix = Aeneas release commit)
+2. `rev` in `proof/lakefile.toml` (must equal that hash)
+3. `LEAN_TOOLCHAIN` in `scripts/gen_lean.sh`
+4. `proof/lean-toolchain` (must equal `LEAN_TOOLCHAIN`)
 
-- Dummy block (timeout) vote handling: complete
+`CHARON_TAG` is independently versioned.
+
+Enforcement layers:
+- **blockwatch** (`affects` cross-links + `line-pattern` format guards) forces co-modification and rejects malformed values. Runs in CI and via pre-commit.
+- **`scripts/check_versions.sh`** asserts actual value equality (blockwatch can force touches, not agreement). Pre-commit hook + `gen_lean.sh` preflight.
+- **CI `lean-proof` job** (`make lean && lake build`) is the ultimate backstop.
+
+## Project skills
+
+`.claude/skills/` hosts reference skills for recurring workflows:
+- `updating-aeneas-charon` — bumping pinned tool versions
+- `regenerating-lean-proofs` — Rust edits → Lean re-derivation
+- `writing-aeneas-compatible-rust` — translation subset + opaque-module escape hatch
+
+## Implementation status
+
+- Dummy-block (timeout) vote handling: complete
 - Real block proposal/voting: TODO
 - Finalization logic: TODO
 - Timer expiration: TODO
+- `NotarizeMsg` (O(1) view-advance): TODO

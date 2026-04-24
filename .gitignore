@@ -12,8 +12,6 @@ debug
 # Contains mutation testing data
 **/mutants.out*/
 
-.claude
-
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
@@ -25,3 +23,12 @@ debug
 # Added by cargo
 
 /target
+
+# Claude Code — allowlist shared project config under .claude/, ignore the rest.
+# Personal/local state (settings.local.json, worktrees/, caches, transcripts)
+# stays out of the repo; only team-shared items below are tracked.
+.claude/*
+!.claude/settings.json
+!.claude/commands/
+!.claude/agents/
+!.claude/skills/
