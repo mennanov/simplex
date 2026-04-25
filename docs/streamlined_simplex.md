@@ -81,7 +81,7 @@ marked `#[charon::opaque]` to axiomatize signature validity in Lean 4).*
 
 **Protocol Messages (All strictly O(1) in chain-height):**
 
-* `Propose(view, block, π_prev, π_parent, leader_sig)` *(Note: π is defined as the tuple `(view, hash, sigs)`)*
+* `Propose(view, block, π_prev, π_parent, leader_sig)` *(Note: $\pi$ is defined as the tuple `(view, hash, sigs)`)*
 * `Vote(view, block_hash, signature)`
 * `Finalize(view, block_hash, signature)`
 * `NotarizeMsg(view, block_hash, signatures, pi_last_real)`
@@ -105,9 +105,9 @@ simplicity).*
 
 **Assertion:** A malicious leader cannot cause the network to finalize a fork by bypassing a validly notarized block.
 
-**Proof:** 1. Assume a real block $b$ was successfully notarized at view $v$. This requires $2f+1$ nodes to have voted
-for it.
+**Proof:**
 
+1. Assume a real block $b$ was successfully notarized at view $v$. This requires $2f+1$ nodes to have voted for it.
 2. Of these voters, at most $f$ are Byzantine, so at least $f+1$ are honest. Each of those honest nodes has updated its
    local state such that `last_real_notarization.view` $\ge v$.
 3. If a Byzantine leader in a future view proposes a block with $h_{parent} < v$, the proposal will be received by
@@ -250,10 +250,11 @@ function handle_vote(state, msg) -> Vec<Action>:
             msg.view, msg.block_hash, current_votes, state.last_real_notarization
         )))
 
-        // Broadcast Finalize if it's a real block AND we didn't dummy-vote (CP23 Lemma 3.3 constraint)
-        // Note for formalization: Lean 4 Option matching natively handles unvoted `None` states safely.
+        // Broadcast Finalize if we explicitly voted for this real block.
+        // Note for formalization: This establishes the structural invariant that broadcasting
+        // Finalize(v, h) implies voted_in_view[v] == h, which is critical for intersection proofs.
         voted_hash = state.voted_in_view.get(msg.view, default=null)
-        if msg.block_hash != DUMMY_HASH and voted_hash != DUMMY_HASH:
+        if msg.block_hash != DUMMY_HASH and voted_hash == msg.block_hash:
             actions.append(Broadcast(Finalize(msg.view, msg.block_hash, sign("finalize", msg.view, msg.block_hash))))
 
         return actions
@@ -283,7 +284,9 @@ function handle_finalize(state, msg) -> Vec<Action>:
 
         // Push to app layer (resolves payloads out-of-band if missing)
         // Note: A node may finalize a view before catching up enough to install its notarization.
-        // In this edge case, last_real_notarization may temporarily lag finalized_view.
+        // In this edge case, last_real_notarization may temporarily lag finalized_view. If this node
+        // becomes leader during this window, its proposal will use a stale pi_parent and be rejected
+        // by the network (wasting one view), safely falling back to standard timeout recovery.
         // Note: FinalizeBlockEvent fires only for the specific view that hit quorum. Intermediate
         // views skipped via NotarizeMsg jumps are transitively finalized; the application layer must reconstruct them.
         return [FinalizeBlockEvent(msg.view, msg.block_hash)]
