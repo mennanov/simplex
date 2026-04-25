@@ -12,10 +12,11 @@ This document specifies a highly pragmatic, simplified architecture that heavily
 the statistical properties of pseudo-random leader election and relying purely on local state guarantees, we eliminate
 complex chain-validation logic without sacrificing BFT safety or theoretical liveness bounds.
 
-*Note on Application Boundaries:* This consensus engine strictly separates metadata from block payloads. It treats
-payloads as opaque bytes and emits abstract `FinalizeBlockEvent(view, hash)` events. The application layer is strictly
-responsible for requesting missing payloads out-of-band from peers. The consensus state machine does not manage block
-data replication.
+*Note on Application Boundaries & Data Availability:* This consensus engine strictly separates metadata from block
+payloads. It treats payloads as opaque bytes and emits abstract `FinalizeBlockEvent(view, hash)` events. To
+mathematically guarantee data availability (DA) for lagging nodes, the implementation must enforce a strict **"No Data,
+No Vote"** rule: the external application wrapper must never feed a `Propose` message into this state machine until the
+corresponding payload bytes have been physically downloaded and stored.
 
 ## 2. Core Simplifications
 
@@ -128,9 +129,11 @@ the future they are, bypassing standard lookahead limits. The quiet install funn
 `last_real_notarization`, and the primary install advances the view and triggers its `Propose` routine if it is the
 designated leader.
 
-*Note: A `Propose(V)` arriving before the catch-up `NotarizeMsg(V-1)` is dropped by the strict `LOOKAHEAD_LIMIT` guard
-in `handle_propose`. The node relies on standard re-broadcast or its $3\Delta$ timeout to re-enter the steady-state
-propose path, consistent with CP23's missed-proposal handling.*
+*Note: A `Propose(V)` exceeding `current_view + LOOKAHEAD_LIMIT` is dropped, and the node waits for `NotarizeMsg` to
+bridge the gap. Within the lookahead window, `Propose` messages are accepted via certificate validation alone—`pi_prev`
+proves legal entry to view $V$—and the quiet installs update `last_real_notarization` even before `current_view` has
+caught up. This two-lane handling means small lag self-corrects through the steady-state vote/notarize path; only deep
+lag requires `NotarizeMsg`-driven catch-up.*
 
 **Acceptable Degradation (The Notarization Split):** If an adversary causes a view to split (some honest nodes hold a
 real notarization, others hold nothing and time out), a leader drawn from the lagging subset will propose with a
@@ -193,6 +196,10 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
 
 ```python
 function handle_propose(state, msg) -> Vec<Action>:
+    // PRECONDITION (Data Availability Gate):
+    // The application layer MUST NOT invoke handle_propose until the
+    // opaque payload for msg.block has been physically downloaded and stored.
+
     if msg.view <= state.finalized_view: return []
     if msg.view < state.current_view: return []
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent bounded memory exhaustion
@@ -406,6 +413,10 @@ operate within a broader networking environment (such as CommonWare or a generic
 
 To preserve the `State → Msg → (State × List Action)` purity required by Aeneas:
 
+* **The Data Availability Gate ("No Data, No Vote"):** The consensus engine relies on the application wrapper to enforce
+  data availability. The wrapper **must not** deliver a `Propose` message to the state machine until the opaque payload
+  associated with `msg.block` has been physically downloaded and verified. This ensures quorum intersection
+  guarantees $f+1$ honest data replicas.
 * **Networking** (gossip, peer discovery, targeted sends) must be completely abstracted away. The consensus engine
   solely consumes deserialized messages and emits abstract `Action` structs.
 * **Storage** (block persistence, payload sync) must be managed by the application layer. The consensus state machine
