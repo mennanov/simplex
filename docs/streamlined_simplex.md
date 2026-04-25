@@ -4,12 +4,12 @@
 
 ## 1. Motivation
 
-The vanilla Simplex protocol (CP23) possesses mathematically optimal latency bounds but suffers from O(h) message
+The vanilla Simplex protocol (CP23) possesses mathematically optimal latency bounds but suffers from $O(h)$ message
 complexity due to the requirement to forward the entire chain of notarizations with every proposal and view advance.
 
-This document specifies a highly pragmatic, simplified architecture that heavily bounds all protocol messages to **O(1)
-in chain-height** (~5KB of aggregated signatures) and aggressively strips down the state machine. By leveraging the
-statistical properties of pseudo-random leader election and relying purely on local state guarantees, we eliminate
+This document specifies a highly pragmatic, simplified architecture that heavily bounds all protocol messages to *
+*$O(1)$ in chain-height** (~5KB of aggregated signatures) and aggressively strips down the state machine. By leveraging
+the statistical properties of pseudo-random leader election and relying purely on local state guarantees, we eliminate
 complex chain-validation logic without sacrificing BFT safety or theoretical liveness bounds.
 
 *Note on Application Boundaries:* This consensus engine strictly separates metadata from block payloads. It treats
@@ -29,10 +29,9 @@ between $h_{parent}$ and the current view.
 1. $\pi_{prev}$: The notarization for $view - 1$ (proving the network legally entered this view).
 2. $\pi_{parent}$: The notarization for $h_{parent}$ (proving the parent block is valid).
 
-**The Verification Rule:** A voter simply checks if $block.h_{parent} \ge state.highest\_notarized\_non\_dummy$. If
-true, they vote. If false, they drop the proposal. Safety is preserved via quorum intersection: if a real block was
-notarized, at least $f+1$ honest nodes possess it locally and will reject any malicious proposal attempting to bypass
-it.
+**The Verification Rule:** A voter simply checks if $block.h_{parent} \ge state.last\_real\_notarization.view$. If true,
+they vote. If false, they drop the proposal. Safety is preserved via quorum intersection: if a real block was notarized,
+at least $f+1$ honest nodes possess it locally and will reject any malicious proposal attempting to bypass it.
 
 ### 2.2. O(1) Notarization Forwarding
 
@@ -67,11 +66,11 @@ marked `#[charon::opaque]` to axiomatize signature validity in Lean 4).*
   `hash(SEED || view) mod n`.
 * `is_leader(state, view)`: Evaluates to a boolean. *(Definitional
   equality: `is_leader(state, v) == (expected_leader_for(v) == self.id)`).*
-* `reset_timer(view)`: Cancels any pending timer and schedules a new static view timeout of **$3\Delta$**.
-  *(Production Note: To prevent network churn during sustained outages, an exponential backoff logic can be injected
-  directly into the external networking/timer wrapper. Scaling the actual timeout duration dynamically outside of the
-  verified consensus state machine ensures the network behaves practically in production while allowing the Lean 4
-  proofs to rely mechanically on CP23's original static $3\Delta$ bounds).*
+* `reset_timer(view)`: Cancels any pending timer and schedules a new static view timeout of **$3\Delta$**. *(Production
+  Note: To prevent network churn during sustained outages, an exponential backoff logic can be injected directly into
+  the external networking/timer wrapper. Scaling the actual timeout duration dynamically outside of the verified
+  consensus state machine ensures the network behaves practically in production while allowing the Lean 4 proofs to rely
+  mechanically on CP23's original static $3\Delta$ bounds).*
 * `build_block(h_parent)`: Constructs a block with the given parent height from the leader's local mempool (mempool
   semantics out of scope).
 * `verify_sig(peer_id, payload, sig)`: Returns true iff the signature is cryptographically valid AND the `peer_id` is in
@@ -94,7 +93,6 @@ simplicity).*
 
 * `current_view`: Integer *(Initialized to 1)*
 * `finalized_view`: Integer *(Initialized to 0)*
-* `highest_notarized_non_dummy`: Integer *(Initialized to 0)*
 * `last_real_notarization`: Tuple `(View, Hash, Signatures)` *(Initialized to `GENESIS_NOTARIZATION`, persisted across
   pruning)*
 * `voted_in_view`: BTreeMap<View, BlockHash> *(Initialized empty)*
@@ -111,14 +109,13 @@ simplicity).*
 for it.
 
 2. Therefore, at least $f+1$ honest nodes have updated their local state such that
-   `highest_notarized_non_dummy` $\ge v$.
+   `last_real_notarization.view` $\ge v$.
 3. If a Byzantine leader in a future view proposes a block with $h_{parent} < v$, the proposal will be received by
    those $f+1$ honest nodes.
-4. They evaluate $block.h_{parent} < state.highest\_notarized\_non\_dummy$. The check fails. They drop the proposal.
+4. They evaluate $block.h_{parent} < state.last\_real\_notarization.view$. The check fails. They drop the proposal.
 5. Quorum intersection ensures the malicious bypass can never be notarized. Safety is perfectly preserved.
    *(Invariant: Due to the vote-once rule and quorum intersection, at most one hash—real OR dummy—can be notarized per
-   view. Only real notarizations raise `highest_notarized_non_dummy`, and only real notarizations are valid as
-   π_parent).*
+   view. Only real notarizations update `last_real_notarization`, and only real notarizations are valid as π_parent).*
 
 ### 4.2. Liveness (Partition Catch-up & Expected Degradation)
 
@@ -127,7 +124,7 @@ for it.
 **Mechanism:** If a node misses a view, it receives `NotarizeMsg(v)` from peers advancing to $v+1$. Because proper
 notarization certificates are cryptographically unforgeable, nodes accept valid `NotarizeMsg`s regardless of how far in
 the future they are, bypassing standard lookahead limits. The quiet install funnel seamlessly updates the node's
-`highest_notarized_non_dummy`, and the primary install advances the view and triggers its `Propose` routine if it is the
+`last_real_notarization`, and the primary install advances the view and triggers its `Propose` routine if it is the
 designated leader.
 
 **Acceptable Degradation (The Notarization Split):** If an adversary causes a view to split (some honest nodes hold a
@@ -152,12 +149,11 @@ inherits CP23's **Lemma 3.6** and its partial-synchrony liveness guarantees verb
 The funnels for metadata high-water marks, view advancement, and leader proposal generation. Note: State transitions are
 strictly sequential; `handle_*` functions execute atomically.
 
-```
+```python
 function install_notarization_quiet(state, view, hash, signatures):
     """Updates metadata safely without triggering view advance or proposals."""
     if view <= state.finalized_view: return
     if hash != DUMMY_HASH:
-        state.highest_notarized_non_dummy = max(state.highest_notarized_non_dummy, view)
         if view > state.last_real_notarization.view:
             state.last_real_notarization = (view, hash, signatures)
 
@@ -190,7 +186,7 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
 
 ### 6.2. Handle Propose
 
-```
+```python
 function handle_propose(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
     if msg.view < state.current_view: return []
@@ -212,7 +208,7 @@ function handle_propose(state, msg) -> Vec<Action>:
     install_notarization_quiet(state, msg.pi_parent.view, msg.pi_parent.hash, msg.pi_parent.sigs)
 
     // 2. The Local Highest Rule
-    if msg.block.h_parent < state.highest_notarized_non_dummy:
+    if msg.block.h_parent < state.last_real_notarization.view:
         return [] // Leader is bypassing known history
 
     state.voted_in_view[msg.view] = hash(msg.block)
@@ -221,7 +217,7 @@ function handle_propose(state, msg) -> Vec<Action>:
 
 ### 6.3. Handle Vote
 
-```
+```python
 function handle_vote(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent memory DoS
@@ -255,7 +251,7 @@ function handle_vote(state, msg) -> Vec<Action>:
 
 ### 6.4. Handle Finalize
 
-```
+```python
 function handle_finalize(state, msg) -> Vec<Action>:
     if msg.block_hash == DUMMY_HASH: return [] // Dummy blocks cannot be finalized
     if msg.view <= state.finalized_view: return []
@@ -276,7 +272,7 @@ function handle_finalize(state, msg) -> Vec<Action>:
 
         // Push to app layer (resolves payloads out-of-band if missing)
         // Note: A node may finalize a view before catching up enough to install its notarization.
-        // In this edge case, highest_notarized_non_dummy and last_real_notarization may temporarily lag finalized_view.
+        // In this edge case, last_real_notarization may temporarily lag finalized_view.
         // Note: FinalizeBlockEvent fires only for the specific view that hit quorum. Intermediate
         // views skipped via NotarizeMsg jumps are transitively finalized; the application layer must reconstruct them.
         return [FinalizeBlockEvent(msg.view, msg.block_hash)]
@@ -291,7 +287,7 @@ triggering any `Propose` actions. Note: This handler explicitly omits `LOOKAHEAD
 notarization certificates represent cryptographic proof of network progression, allowing safely bridging deep partition
 gaps.
 
-```
+```python
 function handle_notarize_msg(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
 
@@ -313,7 +309,7 @@ function handle_notarize_msg(state, msg) -> Vec<Action>:
 
 Generates dummy votes to drive view advancement upon network failure.
 
-```
+```python
 function handle_timeout(state, view) -> Vec<Action>:
     if view != state.current_view: return []
     if view in state.voted_in_view: return []
@@ -324,7 +320,7 @@ function handle_timeout(state, view) -> Vec<Action>:
 
 ### 6.7. State Pruning
 
-```
+```python
 function prune_state_below(state, view):
     // Clear out stale dictionaries to tightly bound memory usage.
     // This is invoked on Finalize quorums, and unconditionally on every view advance
@@ -339,8 +335,7 @@ function prune_state_below(state, view):
     delete entries in state.voted_in_view where entry.view <= view
 
     // Retained components:
-    // - state.highest_notarized_non_dummy (Monotonically increases, never pruned)
-    // - state.last_real_notarization (Required for future parent pointers)
+    // - state.last_real_notarization (Monotonically increases, never pruned. Required for future parent pointers)
     // - state.current_view, state.finalized_view
 ```
 
@@ -377,7 +372,7 @@ pipeline, the Rust implementation must adhere strictly to Aeneas' supported lang
 Once translated to Lean 4, the safety of the protocol fundamentally reduces to proving the following lemmas:
 
 1. **`MonotonicHighest`:** The high-water mark only moves forward.
-    * `∀ s c, install_quiet s c → s'.highest_notarized_non_dummy ≥ s.highest_notarized_non_dummy`
+    * `∀ s c, install_quiet s c → s'.last_real_notarization.view ≥ s.last_real_notarization.view`
 2. **`FinalizedPrefixSafety`:** Honest nodes cannot fork prior history.
     * `∀ v, v ≤ finalized_view → ¬∃ proposal voting on parent < v` (Discharged trivially by the
       `msg.block.h_parent < state.finalized_view` guard in `handle_propose`).
