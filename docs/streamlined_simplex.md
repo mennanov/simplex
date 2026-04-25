@@ -53,7 +53,7 @@ satisfies the liveness requirement for partitioned peers without reintroducing $
 * `SEED`: A cryptographic seed derived from genesis for the leader schedule.
 * `DELTA` ($\Delta$): The assumed upper bound on network message delay.
 * `LOOKAHEAD_LIMIT = 10`: Prevents unbounded memory exhaustion from future-view spam on uncertified messages (`Vote`,
-  `Finalize`).
+  `Finalize`) and proposals.
 * `DUMMY_HASH`: A reserved hash representing a timeout block ($\bot$).
 * `GENESIS_HASH`: A reserved hash representing the genesis block.
 * `GENESIS_NOTARIZATION`: A synthetic certificate `(view=0, hash=GENESIS_HASH, sigs={})` bootstrapped into all nodes.
@@ -96,8 +96,8 @@ simplicity).*
 * `last_real_notarization`: Tuple `(View, Hash, Signatures)` *(Initialized to `GENESIS_NOTARIZATION`, persisted across
   pruning)*
 * `voted_in_view`: BTreeMap<View, BlockHash> *(Initialized empty)*
-* `votes`: BTreeMap<(View, BlockHash, PeerId), Signature> *(Initialized empty)*
-* `finalizes`: BTreeMap<(View, BlockHash, PeerId), Signature> *(Initialized empty)*
+* `votes`: BTreeMap<(View, PeerId), (BlockHash, Signature)> *(Initialized empty)*
+* `finalizes`: BTreeMap<(View, PeerId), (BlockHash, Signature)> *(Initialized empty)*
 
 ## 4. Safety and Liveness Analysis
 
@@ -108,14 +108,15 @@ simplicity).*
 **Proof:** 1. Assume a real block $b$ was successfully notarized at view $v$. This requires $2f+1$ nodes to have voted
 for it.
 
-2. Therefore, at least $f+1$ honest nodes have updated their local state such that
-   `last_real_notarization.view` $\ge v$.
+2. Of these voters, at most $f$ are Byzantine, so at least $f+1$ are honest. Each of those honest nodes has updated its
+   local state such that `last_real_notarization.view` $\ge v$.
 3. If a Byzantine leader in a future view proposes a block with $h_{parent} < v$, the proposal will be received by
    those $f+1$ honest nodes.
 4. They evaluate $block.h_{parent} < state.last\_real\_notarization.view$. The check fails. They drop the proposal.
 5. Quorum intersection ensures the malicious bypass can never be notarized. Safety is perfectly preserved.
    *(Invariant: Due to the vote-once rule and quorum intersection, at most one hash—real OR dummy—can be notarized per
-   view. Only real notarizations update `last_real_notarization`, and only real notarizations are valid as π_parent).*
+   view. Only real notarizations update `last_real_notarization`, and only real notarizations are valid
+   as $\pi_{parent}$).*
 
 ### 4.2. Liveness (Partition Catch-up & Expected Degradation)
 
@@ -126,6 +127,10 @@ notarization certificates are cryptographically unforgeable, nodes accept valid 
 the future they are, bypassing standard lookahead limits. The quiet install funnel seamlessly updates the node's
 `last_real_notarization`, and the primary install advances the view and triggers its `Propose` routine if it is the
 designated leader.
+
+*Note: A `Propose(V)` arriving before the catch-up `NotarizeMsg(V-1)` is dropped by the strict `LOOKAHEAD_LIMIT` guard
+in `handle_propose`. The node relies on standard re-broadcast or its $3\Delta$ timeout to re-enter the steady-state
+propose path, consistent with CP23's missed-proposal handling.*
 
 **Acceptable Degradation (The Notarization Split):** If an adversary causes a view to split (some honest nodes hold a
 real notarization, others hold nothing and time out), a leader drawn from the lagging subset will propose with a
@@ -138,9 +143,9 @@ inherits CP23's **Lemma 3.6** and its partial-synchrony liveness guarantees verb
 
 | Consensus Algorithm         | Optimistic Block Time | Proposal Confirmation Time | Lag-Recovery Latency       |
 |:----------------------------|:----------------------|:---------------------------|:---------------------------|
-| **Vanilla Simplex (CP23)**  | $2\delta$             | **$3\delta$**              | $1\delta$ (via $O(h)$ msg) |
-| **Simplified Simplex**      | $2\delta$             | **$3\delta$**              | $1\delta$ (via $O(1)$ msg) |
-| **Jolteon / Fast-HotStuff** | $2\delta$             | $4\delta$                  | Varies                     |
+| **Vanilla Simplex (CP23)**  | $2\Delta$             | **$3\Delta$**              | $1\Delta$ (via $O(h)$ msg) |
+| **Simplified Simplex**      | $2\Delta$             | **$3\Delta$**              | $1\Delta$ (via $O(1)$ msg) |
+| **Jolteon / Fast-HotStuff** | $2\Delta$             | $4\Delta$                  | Varies                     |
 
 ## 6. Pseudocode Specification
 
@@ -190,6 +195,7 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
 function handle_propose(state, msg) -> Vec<Action>:
     if msg.view <= state.finalized_view: return []
     if msg.view < state.current_view: return []
+    if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent bounded memory exhaustion
     if msg.view in state.voted_in_view: return [] // Prevent honest equivocation
     if msg.block.h_parent >= msg.view: return []  // Prevent time-traveling parents
     if msg.block.h_parent < state.finalized_view: return [] // Never build on pre-finalized history
@@ -223,11 +229,16 @@ function handle_vote(state, msg) -> Vec<Action>:
     if msg.view > state.current_view + LOOKAHEAD_LIMIT: return [] // Prevent memory DoS
     if not verify_sig(msg.from, ("vote", msg.view, msg.block_hash), msg.sig): return []
 
-    // Flat map insertion and deduplication guard
-    if (msg.view, msg.block_hash, msg.from) in state.votes: return []
-    state.votes[(msg.view, msg.block_hash, msg.from)] = msg.sig
+    // Flat map insertion and deduplication guard.
+    // By keying solely on (View, PeerId), we explicitly guarantee one vote per peer per view.
+    // Note: This intentionally discards equivocating votes (a Byzantine peer's second vote
+    // for a different hash is silently dropped). Simplex does not slash, so retaining
+    // equivocation evidence is unnecessary; the structural memory bound is the verification benefit.
+    if (msg.view, msg.from) in state.votes: return []
+    state.votes[(msg.view, msg.from)] = (msg.block_hash, msg.sig)
 
     // Extract signatures specific to this view and hash
+    // (Helper aggregates by iterating the view's subset and filtering for msg.block_hash)
     let current_votes = get_signatures(state.votes, msg.view, msg.block_hash)
 
     if len(current_votes) == quorum():
@@ -259,9 +270,9 @@ function handle_finalize(state, msg) -> Vec<Action>:
     if not verify_sig(msg.from, ("finalize", msg.view, msg.block_hash), msg.sig): return []
 
     // Flat map insertion and deduplication guard
-    // Note: Accepts messages for any hash in the LOOKAHEAD. Bounded DoS vector (O(LOOKAHEAD_LIMIT * f * churn)).
-    if (msg.view, msg.block_hash, msg.from) in state.finalizes: return []
-    state.finalizes[(msg.view, msg.block_hash, msg.from)] = msg.sig
+    // Guarantees one finalize message per peer per view.
+    if (msg.view, msg.from) in state.finalizes: return []
+    state.finalizes[(msg.view, msg.from)] = (msg.block_hash, msg.sig)
 
     // Extract finalizes specific to this view and hash
     let current_finalizes = get_signatures(state.finalizes, msg.view, msg.block_hash)
@@ -326,10 +337,11 @@ function prune_state_below(state, view):
     // This is invoked on Finalize quorums, and unconditionally on every view advance
     // to strictly enforce the LOOKAHEAD_LIMIT memory bound even if finalization lags.
 
-    // Safety of voted_in_view pruning: the vote-once property is enforced by the monotonic
-    // current_view (handle_propose rejects msg.view < current_view). Since we only prune
-    // entries where entry.view <= current_view - LOOKAHEAD_LIMIT, the pruned entries are
-    // mathematically unreachable via handle_propose.
+    // Safety of voted_in_view pruning: prune_state_below(state, X) is called with X
+    // in {state.finalized_view, state.current_view.saturating_sub(LOOKAHEAD_LIMIT)}.
+    // Any future handle_propose(msg) write to voted_in_view[msg.view] requires
+    // msg.view > state.finalized_view and msg.view >= state.current_view, both strictly
+    // larger than the respective pruning bounds. Hence pruned keys are unreachable.
     delete entries in state.votes where entry.view <= view
     delete entries in state.finalizes where entry.view <= view
     delete entries in state.voted_in_view where entry.view <= view
@@ -347,8 +359,8 @@ pipeline, the Rust implementation must adhere strictly to Aeneas' supported lang
 ### 7.1. State Structure and Determinism
 
 * **Use `BTreeMap`:** Do not use `HashMap`. Aeneas and Lean 4 require deterministic iteration order for proof stability.
-  By flattening the map keys (e.g., `(View, BlockHash, PeerId)`), we eliminate nested maps, reducing the inductive
-  complexity of the state definition.
+  By flattening the map keys (e.g., `(View, PeerId)`), we explicitly guarantee one entry per peer per view, eliminating
+  DoS vectors and reducing the inductive complexity of the state definition.
 * **Flat State:** State must be a single, owned `struct`. Avoid `Rc`, `Arc`, `RefCell`, or any interior mutability, as
   these block pure-functional translation.
 
@@ -377,5 +389,23 @@ Once translated to Lean 4, the safety of the protocol fundamentally reduces to p
     * `∀ v, v ≤ finalized_view → ¬∃ proposal voting on parent < v` (Discharged trivially by the
       `msg.block.h_parent < state.finalized_view` guard in `handle_propose`).
 3. **`BoundedStateWindow`:** Maps do not grow infinitely.
-    * `∀ s, |s.votes| + |s.finalizes| ≤ n * LOOKAHEAD_LIMIT` (Guaranteed by the `prune_state_below` trigger inside
-      `install_notarization`).
+    * `∀ s, |s.votes| + |s.finalizes| + |s.voted_in_view| ≤ (4n + 2) * LOOKAHEAD_LIMIT` (Guaranteed by the
+      `prune_state_below` trigger inside `install_notarization`. The active sliding window spans from
+      `current_view - LOOKAHEAD_LIMIT` to `current_view + LOOKAHEAD_LIMIT`, creating a maximum width
+      of $2 \cdot \text{LOOKAHEAD\_LIMIT}$ bounded structurally by `(View, PeerId)`).
+
+---
+
+## 8. Implementation Architecture (Context Integration)
+
+While this document outlines the pure state machine logic necessary for formal verification, the protocol is intended to
+operate within a broader networking environment (such as CommonWare or a generic Rust libp2p stack).
+
+To preserve the `State → Msg → (State × List Action)` purity required by Aeneas:
+
+* **Networking** (gossip, peer discovery, targeted sends) must be completely abstracted away. The consensus engine
+  solely consumes deserialized messages and emits abstract `Action` structs.
+* **Storage** (block persistence, payload sync) must be managed by the application layer. The consensus state machine
+  tracks metadata hashes; the node must handle out-of-band sync for `FinalizeBlockEvent` payloads.
+* **Timers** are managed externally. The `reset_timer(view)` function should emit an intent to an external Tokio/async
+  task, keeping the core verification logic completely synchronous and deterministic.
