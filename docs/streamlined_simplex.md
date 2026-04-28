@@ -30,9 +30,10 @@ between $h_{parent}$ and the current view.
 1. $\pi_{prev}$: The notarization for $view - 1$ (proving the network legally entered this view).
 2. $\pi_{parent}$: The notarization for $h_{parent}$ (proving the parent block is valid).
 
-**The Verification Rule:** A voter simply checks if $block.h_{parent} \ge state.last\_real\_notarization.view$. If true,
-they vote. If false, they drop the proposal. Safety is preserved via quorum intersection: if a real block was notarized,
-at least $f+1$ honest nodes possess it locally and will reject any malicious proposal attempting to bypass it.
+**The Verification Rule:** A voter checks if $block.h_{parent} \ge state.last\_real\_notarization.view$ AND ensures the
+block's internal $h_{parent\_hash}$ perfectly matches the hash signed in $\pi_{parent}$. If true, they vote. If false,
+they drop the proposal. Safety is preserved via quorum intersection: if a real block was notarized, at least $f+1$
+honest nodes possess it locally and will reject any malicious proposal attempting to bypass it.
 
 ### 2.2. O(1) Notarization Forwarding
 
@@ -72,8 +73,8 @@ marked `#[charon::opaque]` to axiomatize signature validity in Lean 4).*
   the external networking/timer wrapper. Scaling the actual timeout duration dynamically outside of the verified
   consensus state machine ensures the network behaves practically in production while allowing the Lean 4 proofs to rely
   mechanically on CP23's original static $3\Delta$ bounds).*
-* `build_block(h_parent)`: Constructs a block with the given parent height from the leader's local mempool (mempool
-  semantics out of scope).
+* `build_block(h_parent, h_parent_hash)`: Constructs a block with the given parent pointers from the leader's local
+  mempool (mempool semantics out of scope).
 * `verify_sig(peer_id, payload, sig)`: Returns true iff the signature is cryptographically valid AND the `peer_id` is in
   the `active_validator_set`.
 * `verify_notarization(cert)`: Returns true iff `(cert.view == 0 and cert.hash == GENESIS_HASH and cert.sigs is empty)`
@@ -185,7 +186,7 @@ function install_notarization(state, view, hash, signatures) -> Vec<Action>:
         if is_leader(state, view + 1):
             pi_prev = (view, hash, signatures)
             pi_parent = state.last_real_notarization
-            block = build_block(h_parent=pi_parent.view)
+            block = build_block(h_parent=pi_parent.view, h_parent_hash=pi_parent.hash)
             leader_sig = sign("propose", view + 1, hash(block))
             actions.append(Broadcast(Propose(view + 1, block, pi_prev, pi_parent, leader_sig)))
 
@@ -213,6 +214,7 @@ function handle_propose(state, msg) -> Vec<Action>:
     if not verify_notarization(msg.pi_prev) or msg.pi_prev.view != msg.view - 1: return []
     if not verify_notarization(msg.pi_parent) or msg.pi_parent.view != msg.block.h_parent: return []
     if msg.pi_parent.hash == DUMMY_HASH: return []
+    if msg.pi_parent.hash != msg.block.h_parent_hash: return [] // Ensure block internals align with proof
 
     // Quietly update high-water marks without triggering view advances or auto-proposals.
     // Note: Intentional lack of view-advancement here keeps state funneled to handle_vote/handle_notarize_msg.
@@ -419,7 +421,11 @@ To preserve the `State → Msg → (State × List Action)` purity required by Ae
   guarantees $f+1$ honest data replicas.
 * **Networking** (gossip, peer discovery, targeted sends) must be completely abstracted away. The consensus engine
   solely consumes deserialized messages and emits abstract `Action` structs.
-* **Storage** (block persistence, payload sync) must be managed by the application layer. The consensus state machine
-  tracks metadata hashes; the node must handle out-of-band sync for `FinalizeBlockEvent` payloads.
+* **Retrievability contract:** Consensus-layer safety guarantees that $\ge f+1$ honest peers received each finalized
+  block's payload at vote time, but the consensus layer does not specify retention. The application layer is responsible
+  for: (1) persisting block payloads on `FinalizeBlockEvent`, and (2) retaining payloads of voted-on but
+  not-yet-finalized blocks for at least K views, where K bounds the deployment's worst-case GST plus finalization-gossip
+  latency. Chain reconstruction back to genesis is self-contained at the application layer via the `h_parent_hash` field
+  in each block — no intermediate notarization certs are required.
 * **Timers** are managed externally. The `reset_timer(view)` function should emit an intent to an external Tokio/async
   task, keeping the core verification logic completely synchronous and deterministic.
