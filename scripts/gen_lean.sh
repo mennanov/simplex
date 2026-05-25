@@ -38,21 +38,21 @@ done
 #   4. Run `make lean-bootstrap` then `cd proof && lake update && lake build`.
 #   5. If `lake build` fails, revisit the patch section (Step 4) below.
 # <block name="charon-tag" line-pattern='^CHARON_TAG="build-\d{4}\.\d{2}\.\d{2}\.\d{6}-[0-9a-f]{40}"$'>
-CHARON_TAG="build-2026.04.23.144211-87fe95ead0b3dd6b9cb62827dd218f1b9bc94e70"
+CHARON_TAG="build-2026.05.12.153533-b85ac3b89f78084cacd456194a7a0c903382474c"
 # </block>
 
 # The commit hash embedded in AENEAS_TAG must match the `rev` in
 # proof/lakefile.toml, and LEAN_TOOLCHAIN must match proof/lean-toolchain —
 # blockwatch enforces that all three are updated together.
 # <block name="aeneas-tag" affects="proof/lakefile.toml:aeneas-rev, :lean-toolchain, :aeneas-patches" line-pattern='^AENEAS_TAG="build-\d{4}\.\d{2}\.\d{2}\.\d{6}-[0-9a-f]{40}"$'>
-AENEAS_TAG="build-2026.04.22.215158-38d10a22642d75d051e14006cc6e45055381f10e"
+AENEAS_TAG="build-2026.05.06.171205-d973341320c1d5c947a95992db2aa6f70b658ea2"
 # </block>
 
 # Mirror of proof/lean-toolchain.  The preflight check below asserts they match
 # exactly; the blockwatch link to aeneas-tag forces both to be reviewed together
 # on every Aeneas upgrade (aeneas-tag → lean-toolchain and the reverse).
 # <block name="lean-toolchain" affects=":aeneas-tag" line-pattern='^LEAN_TOOLCHAIN="leanprover/lean4:[^"]+"$'>
-LEAN_TOOLCHAIN="leanprover/lean4:v4.28.0-rc1"
+LEAN_TOOLCHAIN="leanprover/lean4:v4.29.1"
 # </block>
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -201,7 +201,7 @@ done
 # upstream; add patches for new bugs encountered).  If the list is unchanged
 # across a bump, make a no-op whitespace touch to acknowledge the review.
 # <block name="aeneas-patches" affects=":aeneas-tag">
-# Bug 6 — self-referential `lt` in derived PartialOrd struct literals:
+# Bug 6 — self-referential `lt` in derived PartialOrd struct literals (reviewed 2026-05-25):
 #   The binary emits `lt := <Self>.lt` inside PartialOrd trait impls but
 #   never generates a separate `lt` definition, creating a circular
 #   reference Lean cannot prove terminates. The library defaults from
